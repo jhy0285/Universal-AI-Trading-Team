@@ -9,7 +9,8 @@
 이제 사이클이 정상 완료되며, 해당 모델은 합성 후보를 REJECT해 주문은 없습니다. PASS 경로의 실제 모델 호환은 미검증입니다.
 전역 `LLM_PROVIDER=llama_cpp`와 환경변수의 모델 ID를 사용하며 API 키가 필요 없습니다.
 로컬 World Monitor의 실제 Redis/seed도 구성했고 fear/greed·prediction 데이터를 수집했습니다. 교차 신호가 없어 BOOK은 대기합니다.
-원본 밈코인 전략은 보유자 이력·whale·체결 깊이·원천 시각 자료가 부족해 신규 진입을 차단합니다.
+DexScreener에 없는 원천 시각·보유자 이력·큰 지갑 매도·실행 깊이는 무료 공개 API로 채웁니다([무료 시장 관측](docs/market-observer.md)).
+이 자료가 하나라도 없거나 오래되면 해당 진입은 계속 차단합니다.
 자동 수집이 실행 중이라는 사실은 체결 조건이 충족됐다는 의미가 아닙니다. [자동 페이퍼 운영](docs/autonomous-paper.md)을 참고하세요.
 합성 데모 자료를 이 결측의 대체물로 사용하지 않습니다. 구체적인 결과는 [검증 보고서](docs/validation-report.md)를 확인하세요.
 
@@ -146,6 +147,7 @@ Compose는 PostgreSQL을 사용하고 호스트 개발 명령은 `.env`의 DB UR
 | [LLM 설계](docs/llm-provider-design.md) | 전역 설정, 기능 probe, 실패 처리 |
 | [CLI 호환](docs/cli-providers.md) | CLI 8종과 공통 JSON 브리지, 선택 설치와 전역 설정 |
 | [자동 페이퍼](docs/autonomous-paper.md) | 로컬 CPU 모델, 자동 작업·자료 공급·BOOK·정산·상태 확인 |
+| [무료 시장 관측](docs/market-observer.md) | Jupiter 깊이·Solana 보유자·GeckoTerminal 거래로 채우는 필드, 해석, 비용 |
 | [World Monitor](docs/world-monitor-integration.md) | REST/MCP/SDK 조사와 self-host 조건 |
 | [API 조사](docs/api-integration-plan.md) | DexScreener·Kalshi·Polymarket·Solana의 계약과 제한 |
 | [로드맵](docs/development-roadmap.md) | 구현 범위와 후속 장기 검증 |

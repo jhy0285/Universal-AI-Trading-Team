@@ -26,10 +26,11 @@
 
 - 시간은 timezone-aware UTC로 저장합니다. 스케줄은 SCAN 15분, RISK 5분, CHIEF 23:00 Asia/Seoul입니다.
 - 수집 시각 `fetched_at`과 공급자 관측 시각 `observed_at`을 구별합니다. 기본 시장 300초·실행 호가 60초 이내를 검사합니다.
-- DexScreener 응답의 원천 관측 시각, 보유자 이력, whale 매도 상태, 실제 실행 깊이는 알려지지 않습니다. 이 필드는 null로 남고 자동 진입을 막습니다.
-- Solana largest accounts / supply는 **최대 토큰 계정 비율**입니다. 실소유 지갑 집중도로 이름을 바꾸지 않습니다.
-- legacy SPL mint/freeze authority 검사는 제한된 계약 점검입니다. 포괄적인 스마트 계약 감사가 아닙니다. 전체 보유자 스캔은 기본 비활성입니다.
-- 온체인 Adapter와 공개 호가 Adapter는 구현했지만, 보유자·두 구간·whale 매도의 신뢰할 수 있는 연속 자료를 채우는 외부 indexer는 구성되지 않았습니다.
+- DexScreener 응답에는 원천 관측 시각, 보유자 이력, whale 매도 상태, 실제 실행 깊이가 없습니다.
+  이 필드는 [무료 시장 관측](market-observer.md)이 Jupiter 견적·Solana RPC·GeckoTerminal 거래·자체 이력으로 채우며, 실패한 필드는 null로 남아 진입을 막습니다.
+- 집중도는 유동성 풀을 제외하고 같은 소유자의 token account를 합산한 **최대 보유자 / 총 공급량**입니다. 필드 이름은 호환을 위해 유지합니다.
+- mint/freeze authority와 Token-2022 확장 허용 목록 검사는 제한된 계약 점검입니다. 포괄적인 스마트 계약 감사가 아닙니다.
+- 보유자 조회는 token account 3만 개·응답 10MB 이하에서만 수행합니다. 큰 토큰의 보유자는 unknown입니다.
 - 기존 가격이나 중간가를 체결 증거로 사용하지 않습니다. 가격 없는 RISK는 `close_requested_unpriced`로 남으며 현금이나 수량을 바꾸지 않습니다.
 - RISK의 `20*h6 < h24`는 `h6/(h24/4) < 0.20`과 동일한 Decimal 비교입니다. +50% 시총은 HOLD, +60%는 flag이며 자동 익절이 아닙니다.
 

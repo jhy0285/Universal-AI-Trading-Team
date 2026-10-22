@@ -30,6 +30,7 @@ from trading_team.domain import (
     utcnow,
 )
 from trading_team.llm import Attempt, LLMError, LLMRuntime
+from trading_team.observer import MarketObserver
 from trading_team.operations import Supervisor, intraday_check
 from trading_team.policy import POLICY_VERSION, book_gate, risk_decision, scan_gate, size_quote
 from trading_team.policy import vet_gate as deterministic_vet
@@ -108,6 +109,7 @@ class Desk:
         self.wm = WorldMonitor(settings, self.data)
         self.prediction = PredictionMarkets(self.data)
         self.solana = SolanaOnchain(settings, self.data)
+        self.observer = MarketObserver(settings, db, self.data, self.dex, self.solana)
 
     async def close(self):
         await self.runtime.close()
@@ -219,18 +221,22 @@ class Desk:
         results = []
         errors = []
         queries = [q.strip() for q in self.settings.dex_queries.split(",") if q.strip()][:5]
+        discovered = {}
         for query in queries:
             try:
-                discovered = await self.dex.search(query)
-                try:
-                    discovered = await self.market_feed.enrich(discovered)
-                except DataError as exc:
-                    errors.append({"source": "market_data_feed", "reason": exc.code})
-                for snapshot in discovered:
-                    self.broker.save_snapshot(snapshot)
-                    results.append(snapshot)
+                for snapshot in await self.dex.search(query):
+                    discovered.setdefault((snapshot.asset_id, snapshot.pair_id), snapshot)
             except DataError as exc:
                 errors.append({"query": query, "reason": exc.code})
+        observed, notes = await self.observer.observe(list(discovered.values()))
+        errors.extend(notes)
+        try:
+            observed = await self.market_feed.enrich(observed)
+        except DataError as exc:
+            errors.append({"source": "market_data_feed", "reason": exc.code})
+        for snapshot in observed:
+            self.broker.save_snapshot(snapshot)
+            results.append(snapshot)
         return {
             "snapshots": [x.model_dump(mode="json") | {"snapshot_id": x.digest} for x in results],
             "errors": errors,
@@ -628,7 +634,6 @@ class Desk:
                     try:
                         chain, mint = asset_id.split(":", 1)
                         values = await self.dex.token(chain, mint)
-                        values = await self.market_feed.enrich(values)
                         # Use the same originating pool when available; never silently switch pools.
                         previous = next(
                             (x for x in self.latest_snapshots() if x.asset_id == asset_id), None
@@ -636,6 +641,12 @@ class Desk:
                         snapshot = next(
                             (x for x in values if previous and x.pair_id == previous.pair_id), None
                         )
+                        if snapshot is not None and self.settings.market_observer_enabled:
+                            snapshot = await self.observer.observe_exit(
+                                snapshot, D(position["quantity"])
+                            )
+                        if snapshot is not None:
+                            snapshot = (await self.market_feed.enrich([snapshot]))[0]
                         if snapshot is not None and snapshot.fresh(clock()):
                             break
                     except (DataError, ValueError):

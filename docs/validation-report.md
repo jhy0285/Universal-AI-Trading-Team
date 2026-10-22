@@ -1,5 +1,22 @@
 # 검증 보고서
 
+## 무료 시장 관측 — 2026-10-22, Asia/Seoul
+
+DexScreener에 없는 원천 시각·보유자 이력·큰 지갑 매도·실행 깊이를 [무료 시장 관측](market-observer.md)으로 구현했습니다.
+
+| 검사 | 실제 관측과 범위 |
+| --- | --- |
+| 출처 확인 | Jupiter quote 키 없이 HTTP 200, `contextSlot` 포함. 실제 헤더로 키 없는 bucket이 약 10초당 5회임을 관측. 공식 표는 키 없이 30회/분, 무료 키 60회/분 |
+| 보유자 조회 | 공개 RPC `getTokenLargestAccounts`는 429. `getProgramAccounts`(소유자·수량 40바이트)는 새 Token-2022 토큰 1,099개 계정을 0.11초에 반환. BONK는 10MB 상한에서 중단 |
+| 유동성 풀 판정 | PumpSwap·pump.fun·Orca·Meteora DLMM·Raydium CLMM vault는 pool 주소 소유. Raydium AMM v4·CPMM, Meteora DAMM v2·DBC의 공용 권한 주소를 실제 vault로 확인 |
+| GeckoTerminal | 공식 공개 한도는 30회/분. 이 클라우드의 공유 IP에서는 429가 잦았고 일부 호출만 성공. 다른 네트워크 경로의 실제 응답으로 필드 형식 확인 |
+| 실제 수집 2회 | 새 Solana 토큰 3개, 약 7분 간격. 3개 모두 Jupiter 4단계 깊이·관측 시각·보유자·계약 점검 확보. 2회차에 자체 이전 보유자 수·시각이 채워짐. 거래 구간은 GeckoTerminal 성공 자산만 확보 |
+| 실제 SCAN 사이클 | 로컬 Qwen3-4B 4역할 probe 통과. 관측된 3개 pool은 SCAN 자료 게이트 통과, 관측되지 않은 12개는 `STALE_OR_UNKNOWN_MARKET_TIME`. 모델 SCAN이 evidence에 ID 대신 문장을 적어 `SCAN_UNKNOWN_OR_DUPLICATE_EVIDENCE`로 차단. 주문 0 |
+| 테스트 | SQLite·PostgreSQL 16.15 각각 pytest **217건 통과**. 모의 응답으로 관측→VET 통과→Jupiter 깊이 체결→RISK 보유·청산, 큰 지갑 매도 차단, 429 재시도와 unknown 처리, 10MB 중단 검사 |
+
+자료 공백은 해소됐지만 실제 진입은 아직 없습니다. 이번 실행의 차단 원인은 4B 로컬 모델의 evidence ID 미준수입니다.
+더 큰 모델이나 다른 Provider에서의 판단 품질, 장시간 연속 수집의 공급 안정성은 검증하지 않았습니다.
+
 ## VET 스키마 오류 수정·가상 시작 금액 — 2026-10-22, Asia/Seoul
 
 | 검사 | 실제 관측과 범위 |

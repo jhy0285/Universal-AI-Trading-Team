@@ -23,7 +23,7 @@ native CLI가 토큰을 보고해도 과금 방식이 미확인인 `cli_usage_un
 | World Monitor self-host | 코드 이용 자체와 별개로 서버·Redis·seed 실행·데이터 보관 자원 | Original 기본 경로; full stack 미기동 |
 | WM hosted REST/MCP | 플랜별 허용·quota·이용권 비용 | 조사한 옵션, Original 자동 대체로 사용하지 않음 |
 | DexScreener / Kalshi 공개 조회 | 원문은 무키 조회 사용. 현재 endpoint 접근과 앞으로의 이용 조건은 별개 | 공개 조회 성공; 장기 SLA/무료 보장은 하지 않음 |
-| holder-history·지갑 인덱서·보안 자료 | plan·chain·retention·요청 단가 | 공급자 미선정; 비용 미확정 |
+| 보유자·실행 깊이·거래 구간 | Jupiter·공개 Solana RPC·GeckoTerminal 무료 공개 API. 한도 초과 시 무료 키·유료 플랜 선택 | 기본 무료. [무료 시장 관측](market-observer.md) |
 | 저장/운영 | PostgreSQL·snapshot storage·백업·로그·네트워크·대시보드 | 규모와 보관 기간에 따라 산정 |
 
 모델명과 현재 사용 가능 여부·가격은 환경변수/공식 요금표/probe로 확정합니다.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+from decimal import Decimal as D
 
 import httpx
 import pytest
@@ -12,6 +14,7 @@ from trading_team.data import (
     PublicDataClient,
     SolanaOnchain,
     WorldMonitor,
+    b58encode,
 )
 from trading_team.domain import utcnow
 
@@ -109,20 +112,23 @@ async def test_external_errors_remain_explicit(status):
     assert "sensitive" not in str(error.value)
 
 
-async def test_solana_account_proxy_and_rpc_allowlist(settings):
-    methods = []
+def token_account(owner: bytes, amount: int) -> dict:
+    return {"account": {"data": [base64.b64encode(owner + amount.to_bytes(8, "little")).decode()]}}
+
+
+async def test_solana_holder_scan_excludes_pools_and_checks_token2022(settings):
+    mint = "M" * 32
+    pool, wallet, small = b"\x01" * 32, b"\x02" * 32, b"\x03" * 32
+    methods, extensions = [], [{"extension": "metadataPointer"}, {"extension": "tokenMetadata"}]
 
     def handler(request):
         body = json.loads(request.content)
-        method = body["method"]
-        methods.append(method)
-        values = {
-            "getTokenLargestAccounts": {"context": {"slot": 100}, "value": [{"amount": "40"}]},
-            "getTokenSupply": {"context": {"slot": 100}, "value": {"amount": "1000"}},
-            "getAccountInfo": {
+        methods.append(body["method"])
+        if body["method"] == "getAccountInfo":
+            result = {
                 "context": {"slot": 100},
                 "value": {
-                    "owner": SolanaOnchain.TOKEN_PROGRAM,
+                    "owner": SolanaOnchain.TOKEN_2022_PROGRAM,
                     "data": {
                         "parsed": {
                             "type": "mint",
@@ -130,25 +136,60 @@ async def test_solana_account_proxy_and_rpc_allowlist(settings):
                                 "isInitialized": True,
                                 "mintAuthority": None,
                                 "freezeAuthority": None,
+                                "supply": "1000",
+                                "decimals": 6,
+                                "extensions": extensions,
                             },
                         }
                     },
                 },
-            },
-            "getBlockTime": 1792454400,
-        }
-        return httpx.Response(200, json={"result": values[method]})
+            }
+        elif body["method"] == "getProgramAccounts":
+            assert body["params"][0] == SolanaOnchain.TOKEN_2022_PROGRAM
+            assert body["params"][1]["dataSlice"] == {"offset": 32, "length": 40}
+            rows = [token_account(pool, 600), token_account(wallet, 30)]
+            rows += [token_account(wallet, 10), token_account(small, 5), token_account(small, 0)]
+            result = {"context": {"slot": 101}, "value": rows}
+        else:
+            result = 1792454400
+        return httpx.Response(200, json={"result": result})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         adapter = SolanaOnchain(settings, PublicDataClient(client=client))
-        value = await adapter.inspect_mint("A" * 32)
-        assert str(value["largest_token_account_share"]) == "0.04" and value["contract_safe"]
-        assert "not beneficial-wallet" in value["proxy_definition"]
+        value = await adapter.scan_mint(mint, {b58encode(pool)})
+        # The pool vault is not a wallet; one owner's two token accounts are combined.
+        assert value["holder_count"] == 2 and value["token_accounts"] == 5
+        assert value["largest_token_account_share"] == D("0.04") and value["contract_safe"]
+        assert value["top_owners"] == [b58encode(wallet), b58encode(small)]
+        assert value["observed_at"].timestamp() == 1792454400 and value["decimals"] == 6
+        # Including the pool as a holder makes it the largest owner.
+        assert (await adapter.scan_mint(mint, set()))["largest_token_account_share"] == D("0.6")
+        extensions.append({"extension": "transferHook"})
+        assert not (await adapter.scan_mint(mint, set()))["contract_safe"]
         with pytest.raises(DataError, match="RPC_METHOD_NOT_ALLOWED"):
             await adapter.rpc("sendTransaction", [])
-        with pytest.raises(DataError, match="FULL_HOLDER_SCAN_NOT_ENABLED"):
-            await adapter.holder_count("A" * 32)
-    assert len(methods) == 4 and "sendTransaction" not in methods
+    assert "sendTransaction" not in methods and "getTokenLargestAccounts" not in methods
+
+
+async def test_oversized_response_stops_reading():
+    chunks = [b'{"a":"'] + [b"x" * 4_000_000] * 5 + [b'"}']
+
+    class Stream(httpx.AsyncByteStream):
+        def __init__(self):
+            self.sent = 0
+
+        async def __aiter__(self):
+            for chunk in chunks:
+                self.sent += 1
+                yield chunk
+
+    stream = Stream()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=stream))
+    ) as client:
+        with pytest.raises(DataError, match="DATA_RESPONSE_TOO_LARGE"):
+            await PublicDataClient(client=client).request("GET", "https://example.com", kind="t")
+    assert stream.sent == 4  # Not all seven chunks.
 
 
 async def test_polymarket_execution_depth_has_producer_timestamp():

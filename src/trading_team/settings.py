@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     dex_queries: str = "BONK"
     market_data_feed_url: str = ""
     market_data_feed_api_key: SecretStr = SecretStr("")
+    # Free Jupiter/Solana RPC/GeckoTerminal observations for the most liquid Dex pools.
+    market_observer_enabled: bool = True
+    market_observer_max_assets: int = Field(default=3, ge=1, le=10)
+    # Optional free key from Jupiter's portal: 60 instead of 30 requests/minute.
+    jupiter_api_key: SecretStr = SecretStr("")
     state_dir: Path = Path(".state")
     quote_max_age_seconds: int = Field(default=60, ge=1, le=300)
     market_max_age_seconds: int = Field(default=300, ge=1, le=900)
@@ -237,6 +242,10 @@ class Settings(BaseSettings):
             if self.llm_provider == "llama_cpp"
             else "",
             "market_data_feed_url": self.market_data_feed_url,
+            "market_observer": {
+                "enabled": self.market_observer_enabled,
+                "max_assets": self.market_observer_max_assets,
+            },
             "worldmonitor_base_url": self.worldmonitor_base_url,
             "local_context_size": self.local_llm_context_size
             if self.llm_provider == "llama_cpp"

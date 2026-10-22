@@ -107,7 +107,6 @@ def status(desk) -> dict:
         "contract_safe",
         "large_holder_selling",
         "buy_quote",
-        "sell_quote",
     )
     complete = 0
     for snapshot in snapshots:
