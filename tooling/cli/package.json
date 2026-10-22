@@ -1,0 +1,13 @@
+{
+  "name": "universal-ai-optional-cli-tools",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Optional pinned CLI executables; no credentials or model defaults.",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.306",
+    "@google/gemini-cli": "0.65.0",
+    "@qwen-code/qwen-code": "0.25.3",
+    "opencode-ai": "1.19.3",
+    "@github/copilot": "1.0.101"
+  }
+}

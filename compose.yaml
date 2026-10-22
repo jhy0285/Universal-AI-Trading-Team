@@ -1,0 +1,82 @@
+name: universal-ai-paper
+x-app: &app
+  image: universal-ai-paper:local
+  build:
+    context: .
+    secrets: [ca_bundle]
+  env_file: .env
+  environment: &environment
+    TRADING_MODE: paper
+    DATABASE_URL: postgresql+psycopg://paper:${POSTGRES_PASSWORD:?Run scripts/bootstrap.sh}@postgres:5432/paper
+    WORLDMONITOR_BASE_URL: http://worldmonitor:3000
+    SSL_CERT_FILE: /run/secrets/ca_bundle
+    REQUESTS_CA_BUNDLE: /run/secrets/ca_bundle
+    NO_PROXY: localhost,127.0.0.1,::1,postgres,api,worldmonitor,ollama
+    no_proxy: localhost,127.0.0.1,::1,postgres,api,worldmonitor,ollama
+  volumes: [paper_state:/app/.state]
+  secrets: [ca_bundle]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  depends_on:
+    postgres:
+      condition: service_healthy
+services:
+  postgres:
+    image: postgres:16-bookworm@sha256:07f75b9a180f8c1feb17354ea9dcc556876d805802412f71b2173ff0c8f0b176
+    environment:
+      POSTGRES_DB: paper
+      POSTGRES_USER: paper
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run scripts/bootstrap.sh}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U paper -d paper"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  api:
+    <<: *app
+    ports: ["127.0.0.1:8000:8000"]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 4s
+      retries: 10
+  worker:
+    <<: *app
+    command: [trading-team, worker]
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+  dashboard:
+    <<: *app
+    command: [streamlit, run, src/trading_team/dashboard.py, --server.address, "0.0.0.0", --server.port, "8501", --server.headless, "true", --browser.gatherUsageStats, "false"]
+    environment:
+      <<: *environment
+      DASHBOARD_API_URL: http://api:8000
+    ports: ["127.0.0.1:8501:8501"]
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+  worldmonitor:
+    image: node:24-bookworm-slim
+    profiles: [worldmonitor]
+    user: "1000:1000"
+    working_dir: /worldmonitor
+    command: [node_modules/.bin/vite, --host, "0.0.0.0", --port, "3000", --strictPort]
+    volumes: [./.services/worldmonitor:/worldmonitor]
+    environment:
+      NODE_EXTRA_CA_CERTS: /run/secrets/ca_bundle
+      DEV_PORT: "3000"
+      BROWSER: none
+    secrets: [ca_bundle]
+    ports: ["127.0.0.1:3000:3000"]
+volumes:
+  postgres_data:
+  paper_state:
+secrets:
+  ca_bundle:
+    file: ${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}
