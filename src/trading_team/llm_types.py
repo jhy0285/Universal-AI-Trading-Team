@@ -4,8 +4,25 @@ from dataclasses import dataclass, field
 from typing import Protocol, TypeVar
 
 from pydantic import BaseModel
+from pydantic.json_schema import GenerateJsonSchema
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class ModelOutputJsonSchema(GenerateJsonSchema):
+    """Decimal model outputs are JSON numbers only.
+
+    Pydantic also offers an unconstrained string branch for Decimal; constrained decoders accept
+    any text there, bypassing the numeric bounds. Validation still parses the number exactly.
+    """
+
+    def decimal_schema(self, schema):
+        value = super().decimal_schema(schema)
+        return value["anyOf"][0] if "anyOf" in value else value
+
+
+def output_schema(model: type[BaseModel]) -> dict:
+    return model.model_json_schema(schema_generator=ModelOutputJsonSchema)
 
 
 @dataclass

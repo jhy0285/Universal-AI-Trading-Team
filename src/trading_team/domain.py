@@ -147,7 +147,9 @@ class VetOutput(StrictModel):
     signal_priced_in: bool
     uses_world_news: bool
     win_probability: Probability | None
-    win_payoff_ratio: Positive | None
+    # Constrained decoders do not enforce exclusive numeric bounds, and models answer 0 when
+    # rejecting. Zero means no positive payoff estimate; SIZE treats it as no position.
+    win_payoff_ratio: Nonnegative | None
     expected_return_fraction: Decimal | None
     evidence: list[str]
     explanation: str

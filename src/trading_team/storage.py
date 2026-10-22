@@ -317,7 +317,10 @@ class Database:
 
         self.sessions = sessionmaker(self.engine, expire_on_commit=False)
 
-    def initialize(self):
+    def initialize(self, initial_cash: Decimal = Decimal("1000")):
+        # The paper balance applies only when the main ledger is first created; never rewritten.
+        if not initial_cash.is_finite() or initial_cash <= 0:
+            raise ValueError("invalid paper balance")
         Base.metadata.create_all(self.engine)
         with self.transaction() as session:
             if session.get(Account, "main") is None:
@@ -325,8 +328,8 @@ class Database:
                     Account(
                         id="main",
                         provenance="live",
-                        cash=Decimal("1000"),
-                        initial_cash=Decimal("1000"),
+                        cash=initial_cash,
+                        initial_cash=initial_cash,
                     )
                 )
 

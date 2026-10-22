@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from decimal import Decimal
 
 import httpx
 import pytest
 
-from trading_team.domain import ProbeOutput, ScanOutput
+from trading_team.domain import BookOutput, ProbeOutput, ScanOutput, VetOutput
 from trading_team.llm import CodexCLIProvider, HTTPProvider, LLMError, LLMRuntime, Reply
+from trading_team.llm_types import output_schema
 from trading_team.settings import Settings
 
 
@@ -257,3 +259,21 @@ def test_codex_docker_forwards_stdin_and_uses_readonly_existing_auth(
     assert f"type=bind,src={tmp_path}/auth.json,dst={tmp_path}/auth.json,readonly" in command
     assert "mcp_servers={}" in command
     assert name.startswith("uat-llm-")
+
+
+def test_model_output_decimals_are_numbers_without_free_text():
+    # A free string branch lets constrained decoders bypass numeric bounds entirely.
+    probability = output_schema(BookOutput)["properties"]["probability_yes"]
+    assert probability["anyOf"] == [
+        {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        {"type": "null"},
+    ]
+    vet = output_schema(VetOutput)["properties"]
+    assert vet["win_payoff_ratio"]["anyOf"][0] == {"type": "number", "minimum": 0.0}
+    # Recorded fixtures may still carry exact decimal text.
+    recorded = VetOutput.model_validate_json(
+        '{"verdict":"PASS","signal_priced_in":false,"uses_world_news":false,'
+        '"win_probability":"0.7","win_payoff_ratio":0,"expected_return_fraction":"0.1",'
+        '"evidence":[],"explanation":"x"}'
+    )
+    assert recorded.win_probability == Decimal("0.7") and recorded.win_payoff_ratio == 0

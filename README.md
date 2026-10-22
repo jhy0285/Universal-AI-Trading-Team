@@ -5,7 +5,8 @@
 ## 현재 상태
 
 **로컬 CPU LLM과 자동 페이퍼 수집·감시를 실행합니다.** 네 AI 역할의 간단한 실제 추론·출력 스키마 점검은 통과했습니다.
-다만 실제 모델을 연결한 합성 재생에서 VET 응답이 `LLM_SCHEMA_INVALID`로 차단되어 일반 분석 호환 검증은 미완료입니다.
+실제 모델을 연결한 합성 재생에서 VET가 `LLM_SCHEMA_INVALID`로 차단되던 문제는 원인(REJECT 시 손익비 0 출력)을 수정했습니다.
+이제 사이클이 정상 완료되며, 해당 모델은 합성 후보를 REJECT해 주문은 없습니다. PASS 경로의 실제 모델 호환은 미검증입니다.
 전역 `LLM_PROVIDER=llama_cpp`와 환경변수의 모델 ID를 사용하며 API 키가 필요 없습니다.
 로컬 World Monitor의 실제 Redis/seed도 구성했고 fear/greed·prediction 데이터를 수집했습니다. 교차 신호가 없어 BOOK은 대기합니다.
 원본 밈코인 전략은 보유자 이력·whale·체결 깊이·원천 시각 자료가 부족해 신규 진입을 차단합니다.
@@ -18,6 +19,8 @@
 - 설정은 `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` 환경변수로 관리합니다. 에이전트별 override와 자동 모델 fallback은 없습니다.
 - SIZE·FILLS·RISK는 결정론적 Python입니다. RISK는 LLM 대기열과 독립적으로 실행됩니다.
 - 실제 주문 제출, 지갑·서명, 실거래 전환 기능은 없습니다. `TRADING_MODE=paper`만 허용합니다.
+- 모든 자금은 가상 USD입니다. `main` 장부의 시작 금액은 `PAPER_INITIAL_CASH`(기본 1000)로 정하며 **장부를 처음 만들 때만** 적용합니다.
+  기존 장부의 잔고·이력은 바꾸지 않습니다. 다른 금액으로 새로 시작하려면 새 `DATABASE_URL`을 지정하세요. `trading-team init`이 실제 적용된 잔고를 표시합니다.
 - 원문에서 정하지 않은 수식·체결 의미는 버전 고정된 [구현 해석](docs/implementation-decisions.md)에 공개했습니다.
 
 ## 빠른 시작

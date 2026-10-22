@@ -10,18 +10,32 @@ from trading_team.engine import Desk
 from trading_team.metrics import performance
 from trading_team.replay import ReplayCase, demo_case, run_replay
 from trading_team.settings import Settings
-from trading_team.storage import Database
+from trading_team.storage import Account, Database
 
 
 async def execute(args):
     settings = Settings()
     db = Database(settings.database_url)
-    db.initialize()
+    db.initialize(settings.paper_initial_cash)
     desk = Desk(settings, db)
     try:
         if args.command == "init":
             desk.activate_config()
-            return {"initialized": True, "paper_only": True, "model": settings.public()}
+            with db.transaction() as s:
+                main = s.get(Account, "main")
+                account = {
+                    "id": main.id,
+                    "initial_cash": str(main.initial_cash),
+                    "cash": str(main.cash),
+                }
+            if main.initial_cash != settings.paper_initial_cash:
+                account["note"] = "PAPER_INITIAL_CASH_APPLIES_ONLY_TO_A_NEW_LEDGER"
+            return {
+                "initialized": True,
+                "paper_only": True,
+                "paper_account": account,
+                "model": settings.public(),
+            }
         if args.command == "status":
             return {
                 "model": settings.public(),

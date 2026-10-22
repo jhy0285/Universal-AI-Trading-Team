@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -53,6 +54,10 @@ class Settings(BaseSettings):
         return init_settings, env_settings, checked_dotenv, file_secret_settings
 
     trading_mode: Literal["paper"] = "paper"
+    # Virtual USD for a newly created main ledger. An existing ledger keeps its own history.
+    paper_initial_cash: Decimal = Field(
+        default=Decimal("1000"), gt=0, le=100_000_000, allow_inf_nan=False
+    )
     llm_provider: ProviderName = "codex_cli"
     llm_model: str = Field(default="", max_length=150)
     llm_api_key: SecretStr = SecretStr("")
@@ -293,4 +298,5 @@ class Settings(BaseSettings):
             "cli": self.llm_provider in CLI_PROVIDER_NAMES,
             "autonomous_enabled": self.autonomous_enabled,
             "funds": "paper_money_only",
+            "paper_initial_cash": str(self.paper_initial_cash),
         }

@@ -1,5 +1,18 @@
 # 검증 보고서
 
+## VET 스키마 오류 수정·가상 시작 금액 — 2026-10-22, Asia/Seoul
+
+| 검사 | 실제 관측과 범위 |
+| --- | --- |
+| 원인 재현 | 공식 Qwen3-4B Q4_K_M GGUF(SHA-256 `7485fe6f…34fdf5`, 2,497,280,256 bytes)와 고정 llama.cpp b11790, 저장소와 같은 서버 옵션. 4역할 probe 통과 후 합성 재생 3회. VET가 매번 `REJECT`와 `win_payoff_ratio: 0`을 출력해 `LLM_SCHEMA_INVALID`로 사이클 전체가 차단됨 |
+| 원인 | schema의 `exclusiveMinimum: 0`을 llama.cpp grammar가 number에 강제하지 않고, Pydantic `gt=0` 검증이 0을 거절. Decimal schema의 제약 없는 string 분기도 같은 방식으로 범위를 우회할 수 있음 |
+| 수정 | 모든 Provider에 보내는 모델 출력 schema의 Decimal을 JSON number만 허용. VET 손익비는 0 이상을 받고 0은 추정 없음으로 SIZE 0. 진입 규칙·게이트 순서는 변경 없음 |
+| 수정 후 실제 모델 | 같은 조건 재생 3회 모두 사이클 completed. VET REJECT 기록 후 결정론적 게이트가 `ROUND_TRIP_FEES_ERASE_EDGE`로 차단. 주문·체결 0, 장부 무결성 유지 |
+| 가상 시작 금액 | `PAPER_INITIAL_CASH`가 새 main 장부의 가상 USD를 정함. 기존 장부는 유지하고 `init`이 실제 잔고와 안내를 표시함을 CLI로 확인 |
+| 테스트 | SQLite pytest **208건 통과**, 별도 PostgreSQL 16.15(UTF-8)에서도 **208건 통과**. Ruff check/format·문서 검사 통과. 새 VET 회귀 테스트가 수정 전 코드에서 실패함을 확인 |
+
+모델은 합성 후보를 여전히 REJECT하고 evidence에 evidence_id 대신 필드 텍스트를 적습니다. PASS 경로의 실제 모델 호환과 판단 품질은 검증하지 않았습니다.
+
 ## 자동 페이퍼·로컬 CPU 모델 검증 — 2026-10-21, Asia/Seoul
 
 사용자는 페이퍼머니로 자동 운영을 요청하고 API 키 없는 로컬 LLM 사용을 선택했습니다.

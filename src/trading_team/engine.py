@@ -454,6 +454,7 @@ class Desk:
                             equity is None
                             or analysis.win_probability is None
                             or analysis.win_payoff_ratio is None
+                            or analysis.win_payoff_ratio <= 0
                             or snapshot.liquidity_usd is None
                         ):
                             amount = D("0")

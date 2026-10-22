@@ -19,7 +19,7 @@ from trading_team.llm_types import Attempt as Attempt
 from trading_team.llm_types import LLMError as LLMError
 from trading_team.llm_types import LLMProvider as LLMProvider
 from trading_team.llm_types import Reply as Reply
-from trading_team.llm_types import T
+from trading_team.llm_types import T, output_schema
 from trading_team.settings import Settings
 
 AI_ROLES = {"CHIEF", "SCAN", "VET", "BOOK"}
@@ -48,7 +48,7 @@ class HTTPProvider:
 
     async def generate(self, messages: list[dict], response_schema: type[T]) -> Reply:
         cfg = self.settings
-        schema = response_schema.model_json_schema()
+        schema = output_schema(response_schema)
         key = cfg.llm_api_key.get_secret_value()
         kind = cfg.llm_provider
         headers = {"Content-Type": "application/json"}
@@ -303,7 +303,7 @@ class CodexCLIProvider:
             prefix="llm-", dir=self.settings.state_dir.resolve()
         ) as temp:
             directory = Path(temp)
-            (directory / "schema.json").write_text(json.dumps(response_schema.model_json_schema()))
+            (directory / "schema.json").write_text(json.dumps(output_schema(response_schema)))
             command, container_name = self._command(directory)
             prompt = json.dumps(
                 {

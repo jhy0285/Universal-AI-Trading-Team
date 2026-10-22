@@ -174,3 +174,31 @@ def test_decimal_small_price_exact_roundtrip(db, snapshot):
     assert D(result["notional"]) == D(result["quantity"]) * price
     assert D(result["notional"]) <= 60
     assert all(PaperBroker(db).integrity("paper").values())
+
+
+def test_paper_initial_cash_applies_only_to_a_new_main_ledger(db, tmp_path):
+    from trading_team.storage import Database
+
+    db.initialize(D("5000"))
+    with db.transaction() as s:
+        assert s.get(Account, "main").cash == s.get(Account, "main").initial_cash == 1000
+    fresh = Database(f"sqlite:///{tmp_path}/fresh.sqlite3")
+    fresh.initialize(D("5000"))
+    with fresh.transaction() as s:
+        assert s.get(Account, "main").cash == s.get(Account, "main").initial_cash == 5000
+    assert all(PaperBroker(fresh).integrity("main").values())
+    fresh.engine.dispose()
+    with pytest.raises(ValueError):
+        db.initialize(D("0"))
+
+
+def test_paper_initial_cash_setting_is_bounded():
+    from pydantic import ValidationError
+
+    from trading_team.settings import Settings
+
+    assert Settings(_env_file=None, paper_initial_cash="2500").paper_initial_cash == D("2500")
+    assert Settings(_env_file=None).public()["paper_initial_cash"] == "1000"
+    for value in ("0", "-1", "NaN", "100000001"):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, paper_initial_cash=value)

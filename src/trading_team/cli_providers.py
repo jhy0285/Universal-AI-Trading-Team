@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from trading_team.cli_process import run_process
 from trading_team.cli_registry import CLI_PROFILES, resolve_executable
-from trading_team.llm_types import LLMError, Reply, T
+from trading_team.llm_types import LLMError, Reply, T, output_schema
 from trading_team.settings import Settings
 
 
@@ -157,12 +157,12 @@ class CLIProvider:
                 env["ANTHROPIC_BASE_URL"] = cfg.llm_base_url
             elif kind == "qwen_cli":
                 env["OPENAI_BASE_URL"] = cfg.llm_base_url
-        schema_text = json.dumps(schema.model_json_schema(), ensure_ascii=False)
+        schema_text = json.dumps(output_schema(schema), ensure_ascii=False)
         envelope = {
             "protocol_version": 1,
             "model": cfg.llm_model,
             "messages": messages,
-            "response_schema": schema.model_json_schema(),
+            "response_schema": output_schema(schema),
             "tool_policy": "deny",
         }
         prompt = (

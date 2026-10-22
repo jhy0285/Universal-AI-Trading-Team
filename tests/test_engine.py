@@ -4,6 +4,7 @@ import json
 from datetime import timedelta
 from decimal import Decimal as D
 
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -19,7 +20,7 @@ from trading_team.domain import (
     stable_hash,
 )
 from trading_team.engine import Desk
-from trading_team.llm import Attempt, LLMRuntime, Reply
+from trading_team.llm import Attempt, HTTPProvider, LLMRuntime, Reply
 from trading_team.replay import run_replay
 from trading_team.storage import AgentRecord, ModelUsage, Position
 
@@ -250,3 +251,68 @@ async def test_book_commits_probability_before_prices_or_stops_degraded(
     else:
         assert not price_calls and result["reason"] == "WORLD_MONITOR_DEGRADED"
     await desk.close()
+
+
+async def test_local_model_vet_reject_with_zero_estimates_completes(db, settings, case):
+    # Reply recorded from Qwen3-4B Q4_K_M on llama.cpp b11790 for this demo case. The grammar
+    # does not enforce exclusive bounds, so 0 used to fail the whole cycle as LLM_SCHEMA_INVALID.
+    vet_reply = {
+        "verdict": "REJECT",
+        "signal_priced_in": False,
+        "uses_world_news": False,
+        "win_probability": 0,
+        "win_payoff_ratio": 0,
+        "expected_return_fraction": 0,
+        "evidence": ["holder_count: 1100", "previous_holder_count: 1000"],
+        "explanation": "The evidence is incomplete and does not provide sufficient information.",
+    }
+    schemas = {}
+
+    def respond(request):
+        body = json.loads(request.content)
+        schema = body["response_format"]["json_schema"]
+        schemas[schema["name"]] = schema["schema"]
+        payload = json.loads(body["messages"][-1]["content"])
+        if "example" in payload:
+            content = payload["example"]
+        elif schema["name"] == "ScanOutput":
+            content = case.events[0].scan.model_dump(mode="json")
+        elif schema["name"] == "VetOutput":
+            content = vet_reply
+        else:
+            content = {"summary": "Recorded facts only.", "evidence": []}
+        return httpx.Response(
+            200,
+            json={
+                "model": "local-model",
+                "choices": [{"message": {"content": json.dumps(content)}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            },
+        )
+
+    cfg = settings.model_copy(update={"llm_provider": "llama_cpp", "llm_model": "local-model"})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        desk = Desk(cfg, db, LLMRuntime(cfg, HTTPProvider(cfg, client)))
+        try:
+            assert (await desk.probe())["verified"]
+            result = await run_replay(desk, case, "local-model-replay", use_model=True)
+        finally:
+            await desk.close()
+    cycle = result["results"][0]
+    assert cycle["status"] == "completed" and cycle["orders"] == []
+    assert cycle["decisions"] == [
+        {
+            "asset_id": case.events[0].snapshots[0].asset_id,
+            "allowed": False,
+            "reason": "ROUND_TRIP_FEES_ERASE_EDGE",
+        }
+    ]
+    assert all(result["integrity"].values())
+    properties = schemas["VetOutput"]["properties"]
+    for name in ("win_probability", "win_payoff_ratio", "expected_return_fraction"):
+        assert [x["type"] for x in properties[name]["anyOf"]] == ["number", "null"]
+    assert properties["win_probability"]["anyOf"][0] == {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0,
+    }

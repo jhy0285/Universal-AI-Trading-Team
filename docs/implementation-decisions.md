@@ -49,6 +49,8 @@
 사용자 선택에 따라 전역 Provider를 loopback-only `llama_cpp`로 설정했습니다. 가중치 URL·SHA-256과 모델 ID는 환경변수에서 선택합니다.
 고정 CPU runtime·검증된 GGUF 하나를 사용하고, 도구·MCP·agent 모드는 비활성화합니다. 네 역할의 실제 로컬 schema probe를 통과했습니다.
 로컬 토큰은 `local_inference_usage`로 보존하며 외부 API 요금으로 환산하지 않습니다.
+모델 출력 schema의 Decimal 필드는 JSON number만 허용합니다. 제약 없는 문자열 분기는 constrained decoder가 수치 범위를 우회하게 합니다.
+llama.cpp grammar는 number의 범위를 강제하지 않으므로 VET 손익비는 0 이상을 받고, 0은 추정 없음으로 보아 SIZE가 0을 계산합니다.
 
 단일 HTTP Adapter 구현은 네이티브 Provider의 JSON schema API를 사용합니다. SDK/LiteLLM 대신 httpx를 채택해 의존성을 줄였습니다.
 각 Provider 계약은 HTTP mock으로 검사했으며 **유료 실제 모델의 호환성을 검증한 것은 아닙니다**.
