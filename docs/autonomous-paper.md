@@ -48,6 +48,9 @@ URL은 고정 revision의 HTTPS 파일이어야 하며 키·인증 query를 포�
 
 서비스 관리자는 선택된 로컬 모델을 먼저 실행하고 health 응답을 확인합니다.
 서버는 loopback에만 바인딩하고 CPU·단일 slot·offline·도구/MCP/agent 비활성 설정을 사용합니다.
+CPU 4코어에서 측정한 Qwen3-4B·8B는 SCAN 순위는 대체로 맞지만 VET 판단(가격 반영 여부, 승률·손익비 추정)을 신뢰할 수 없었습니다.
+결정론적 게이트가 막으므로 잘못 체결되지는 않지만 진입도 없습니다. 실제 판단에는 Claude·Codex CLI 같은 더 강한 전역 모델을 권장합니다.
+8B는 CPU 4코어에서 VET 1회에 약 90초가 걸립니다. 자세한 비교는 [검증 보고서](validation-report.md)에 있습니다.
 모델 비용은 외부 API 비용 0원이라는 전체 운영비 가정으로 환산하지 않습니다. 로컬 토큰과 CPU·메모리 비용을 구별합니다.
 
 ## 로컬 World Monitor 데이터
