@@ -428,8 +428,11 @@ async def test_live_cycle_requotes_and_fills_on_fresh_depth(db, settings, market
     model = DeskModel()
     async with httpx.AsyncClient(transport=httpx.MockTransport(market.handle)) as client:
         desk = await live_desk(db, settings, market, client, model, history=True)
+        messages = []
+        desk.notifier.send = messages.append
         result = await desk.run_cycle("main", "observed-entry")
         await desk.close()
+    assert len(messages) == 1 and messages[0].startswith("매수 filled solana:")
     assert result["status"] == "completed", result
     assert [x["reason"] for x in result["decisions"]] == ["VET_PASS"]
     order = result["orders"][0]

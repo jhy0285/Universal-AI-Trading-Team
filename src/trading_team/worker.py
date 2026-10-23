@@ -60,6 +60,11 @@ async def daily_report(desk: Desk) -> dict:
     except LLMError as exc:
         facts["report_degraded"] = exc.code
     desk.record_agent("daily-report", "CHIEF", "daily_report", facts)
+    performance_facts = facts["performance"]
+    desk.notifier.send(
+        f"{facts['date_seoul']} 마감 보고: 현금 {performance_facts.get('cash')} USD, "
+        f"평가 자산 {performance_facts.get('equity')}, 오늘 거절 {rejections}건"
+    )
     with desk.db.transaction() as s:
         account = lock_account(s, "main")
         audit(s, account, "DAILY_REPORT", facts)

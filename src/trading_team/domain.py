@@ -21,6 +21,8 @@ Nonnegative = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
 Positive = Annotated[Decimal, Field(gt=0, allow_inf_nan=False)]
 Probability = Annotated[Decimal, Field(ge=0, le=1, allow_inf_nan=False)]
 Role = Literal["CHIEF", "SCAN", "VET", "BOOK", "SIZE", "FILLS", "RISK"]
+# Bounded free text: a grammar then bounds generation, so slow CPU models cannot run away.
+Explanation = Annotated[str, Field(max_length=800)]
 
 
 def utcnow() -> datetime:
@@ -148,7 +150,7 @@ class MarketSnapshot(StrictModel):
 class ScanOutput(StrictModel):
     candidate_ids: list[str] = Field(max_length=10)
     evidence: list[str]
-    explanation: str
+    explanation: Explanation
 
 
 class VetOutput(StrictModel):
@@ -161,14 +163,14 @@ class VetOutput(StrictModel):
     win_payoff_ratio: Nonnegative | None
     expected_return_fraction: Decimal | None
     evidence: list[str]
-    explanation: str
+    explanation: Explanation
 
 
 class BookOutput(StrictModel):
     probability_yes: Probability | None
     abstain: bool
     evidence: list[str]
-    explanation: str
+    explanation: Explanation
 
     @model_validator(mode="after")
     def probability_required(self) -> BookOutput:
@@ -206,7 +208,7 @@ def cited[M: BaseModel](
 
 
 class ChiefOutput(StrictModel):
-    summary: str
+    summary: str = Field(max_length=2000)
     evidence: list[str]
 
 

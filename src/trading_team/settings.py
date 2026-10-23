@@ -107,6 +107,11 @@ class Settings(BaseSettings):
     market_observer_max_assets: int = Field(default=3, ge=1, le=10)
     # Optional free key from Jupiter's portal: 60 instead of 30 requests/minute.
     jupiter_api_key: SecretStr = SecretStr("")
+    # Optional messages for fills, halts, the intraday 10% alert and daily reports.
+    # A Discord or Slack incoming-webhook URL, and/or a Telegram bot token with a chat ID.
+    notify_webhook_url: SecretStr = SecretStr("")
+    notify_telegram_bot_token: SecretStr = SecretStr("")
+    notify_telegram_chat_id: str = Field(default="", pattern=r"^(-?\d{1,20}|@[A-Za-z0-9_]{5,32})?$")
     # Unreferenced live observation evidence older than this is pruned daily; 0 keeps everything.
     snapshot_retention_days: int = Field(default=14, ge=0, le=3650)
     state_dir: Path = Path(".state")
@@ -129,6 +134,16 @@ class Settings(BaseSettings):
             "goose": "goose_cli",
             "custom": "custom_cli",
         }.get(value, value)
+
+    @field_validator("notify_webhook_url")
+    @classmethod
+    def https_webhook(cls, value: SecretStr) -> SecretStr:
+        url = value.get_secret_value()
+        if url:
+            parts = urlsplit(url)
+            if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+                raise ValueError("notification webhook must be an HTTPS URL without credentials")
+        return value
 
     @field_validator("llm_model")
     @classmethod

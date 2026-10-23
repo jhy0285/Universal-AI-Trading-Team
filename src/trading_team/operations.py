@@ -106,12 +106,13 @@ class Supervisor:
 
     def __init__(self, db: Database):
         self.db = db
+        self.on_halt = None  # Optional callback(role, reason) after the desk is halted.
 
     def observe(
         self, role: str, success: bool, reason: str = "", now: datetime | None = None
     ) -> bool:
         now = now or utcnow()
-        restart = False
+        restart = halted = False
         with self.db.transaction() as s:
             account = lock_account(s, "main")
             health = s.get(WorkerHealth, role)
@@ -146,10 +147,13 @@ class Supervisor:
                     {"role": role, "reason": reason, "restart_count_1h": len(history)},
                 )
                 if not restart:
+                    halted = True
                     account.killed, account.kill_reason = (
                         True,
                         f"SUPERVISOR_{role}_REPEATED_FAILURE",
                     )
+        if halted and self.on_halt:
+            self.on_halt(role, reason)
         return restart
 
     def status(self) -> list[dict]:

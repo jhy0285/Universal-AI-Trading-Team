@@ -31,6 +31,7 @@ from trading_team.domain import (
     utcnow,
 )
 from trading_team.llm import Attempt, LLMError, LLMRuntime
+from trading_team.notify import Notifier, fill_text
 from trading_team.observer import MarketObserver
 from trading_team.operations import Supervisor, intraday_check
 from trading_team.policy import (
@@ -63,6 +64,11 @@ from trading_team.storage import (
 D = Decimal
 
 
+SCAN_TASK = (
+    "Rank at most 10 candidates by derived.holder_growth_fraction, computed by Python. A "
+    "candidate whose price grows faster than its holders must not rank above one whose holders "
+    "grow faster. Cite each chosen candidate's evidence_id in evidence. No orders or sizes."
+)
 VET_TASK = (
     "Python has already verified this candidate's required observations; do not reject for "
     "missing data. Judge only what needs judgement: signal_priced_in (is the holder growth "
@@ -102,22 +108,17 @@ def analysis_snapshot(snapshot: MarketSnapshot, *, scan: bool = False) -> dict:
     # The full immutable snapshot remains the deterministic execution evidence.
     # Model roles receive relevant observations without thousands of executable depth levels.
     if scan:
+        # Ranking needs growth, not raw timestamps or windows: derived carries those compactly,
+        # which keeps the prompt short enough for CPU models.
         fields = {
             "asset_id",
             "symbol",
-            "chain",
-            "pair_id",
-            "source",
-            "observed_at",
             "price",
             "previous_price",
             "liquidity_usd",
             "holder_count",
             "previous_holder_count",
-            "holder_observed_at",
-            "previous_holder_observed_at",
             "price_change_h1_percent",
-            "windows",
         }
         return snapshot.model_dump(mode="json", include=fields) | {"derived": derived(snapshot)}
     data = snapshot.model_dump(mode="json", exclude={"buy_quote", "sell_quote"})
@@ -157,8 +158,18 @@ class Desk:
         self.prediction = PredictionMarkets(self.data)
         self.solana = SolanaOnchain(settings, self.data)
         self.observer = MarketObserver(settings, db, self.data, self.dex, self.solana)
+        self.notifier = Notifier(settings)
+        self.supervisor.on_halt = lambda role, reason: self.notifier.send(
+            f"데스크 신규 진입 중단: {role} 반복 실패 ({reason}). 해제는 Kill Switch 해제로만 가능"
+        )
+
+    def notify_fill(self, order: dict):
+        text = fill_text(order)
+        if text:
+            self.notifier.send(text)
 
     async def close(self):
+        await self.notifier.drain()
         await self.runtime.close()
         await self.data.close()
 
@@ -495,10 +506,7 @@ class Desk:
                 scan = recorded_scan or await self.runtime.generate(
                     "SCAN",
                     {
-                        "task": "Rank at most 10 candidates by derived.holder_growth_fraction, "
-                        "computed by Python. A candidate whose price grows faster than its holders "
-                        "must not rank above one whose holders grow faster. Cite each chosen "
-                        "candidate's evidence_id in evidence. No orders or sizes.",
+                        "task": SCAN_TASK,
                         "snapshots": [
                             analysis_snapshot(x, scan=True) | {"evidence_id": x.digest}
                             for x in eligible
@@ -611,6 +619,7 @@ class Desk:
                         )
                         orders.append(order)
                         self.record_agent(cycle_id, "FILLS", order["status"], order)
+                        self.notify_fill(order)
             else:
                 self.record_agent(
                     cycle_id,
@@ -724,6 +733,8 @@ class Desk:
                     snapshot, resolution = await self.prediction.risk_observation(asset_id)
                     if resolution is not None:
                         order = self.broker.settle_prediction(account_id, resolution, clock())
+                        if order:
+                            self.notify_fill(order)
                         result = {
                             "asset_id": asset_id,
                             "decision": "VERIFIED_BINARY_RESOLUTION",
@@ -801,6 +812,7 @@ class Desk:
                     now=clock(),
                     market_kind=position["market_kind"],
                 )
+                self.notify_fill(order)
             cap = snapshot.market_cap if snapshot is not None and snapshot.fresh(clock()) else None
             initial_cap = (
                 D(position["initial_market_cap"])
@@ -824,11 +836,15 @@ class Desk:
             }
             self.record_agent("risk", "RISK", "close_requested" if close else "hold", result)
             outcomes.append(result)
+        intraday = intraday_check(self.db, account_id, clock())
+        if intraday.get("notified"):
+            change = D(intraday["change_fraction"]) * 100
+            self.notifier.send(f"장중 평가 자산 {change:+.1f}% 변동 (서울 날짜 첫 평가 대비)")
         return {
             "paper_only": True,
             "positions_checked": len(positions),
             "results": outcomes,
-            "intraday": intraday_check(self.db, account_id, clock()),
+            "intraday": intraday,
         }
 
     async def run_book(
@@ -995,6 +1011,7 @@ class Desk:
                     market_kind="prediction",
                 )
                 orders.append(order)
+                self.notify_fill(order)
                 break  # One outcome/venue for this question, not simultaneous contradictory bets.
             return self._finish_cycle(
                 cycle_id,

@@ -108,6 +108,16 @@ RISK는 공개 sell quote로 예측 포지션을 평가합니다. Kalshi의 fina
 이 구현의 해석은 계약당 0/1 USD, 모의 redemption fee 0입니다. 진입 때 반영한 거래 수수료는 유지합니다.
 정산·현금·수량·거래 에피소드·감사 증거는 하나의 DB 트랜잭션으로 저장하고 반복 조회가 이중 입금되지 않도록 합니다.
 
+## 알림과 보존
+
+`NOTIFY_WEBHOOK_URL`(Discord·Slack incoming webhook) 또는 `NOTIFY_TELEGRAM_BOT_TOKEN`·`NOTIFY_TELEGRAM_CHAT_ID`를 설정하면
+모의 체결, 감독에 의한 신규 진입 중단, 장중 10% 변동, 23시 마감 보고를 보냅니다. 메시지는 모두 `[PAPER]`로 시작합니다.
+전송은 기다리지 않고 실패해도 거래 판단에 영향을 주지 않습니다. 실패는 URL·토큰 없이 오류 종류만 기록합니다.
+
+매일 04:17(서울)에 `SNAPSHOT_RETENTION_DAYS`(기본 14일)보다 오래된 실데이터 관측 중 아무것도 참조하지 않는 것을 삭제합니다.
+결정이 인용한 스냅샷, 한 번이라도 보유한 자산의 스냅샷, 정산 근거, 합성·기록 입력과 장부·주문·체결·감사는 삭제하지 않습니다.
+대용량 원본 응답(DexScreener pair 목록, Jupiter 견적)은 SHA-256과 사용한 값만 저장합니다. 수동 실행은 `trading-team prune`입니다.
+
 ## 상태 확인과 중단
 
 - `GET /automation`: 실제 worker lease·설정 일치, 각 작업 결과와 필수 자료 누락 개수.
