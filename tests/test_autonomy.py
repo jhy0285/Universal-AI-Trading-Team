@@ -262,5 +262,8 @@ def test_model_input_keeps_execution_depth_in_deterministic_layer(snapshot):
     data = analysis_snapshot(snapshot)
     assert "buy_quote" not in data and "sell_quote" not in data
     assert data["execution_observations"]["buy"]["present"]
+    # Exit depth belongs to RISK; an absent sell side must not read as missing entry data.
+    assert set(data["execution_observations"]) == {"buy"}
+    assert data["derived"]["holder_growth_fraction"] == "0.1000"
     assert analysis_snapshot(snapshot, scan=True)["holder_count"] == snapshot.holder_count
     assert snapshot.buy_quote.levels

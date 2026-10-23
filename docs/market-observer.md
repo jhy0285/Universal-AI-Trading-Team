@@ -4,6 +4,12 @@ DexScreener가 제공하지 않는 원천 관측 시각, 보유자 이력, 큰 �
 구현은 [observer.py](../src/trading_team/observer.py)와 [data.py](../src/trading_team/data.py)의 `SolanaOnchain`에 있습니다.
 모두 읽기 전용 조회입니다. 스왑 거래 생성·서명·지갑 연결 경로는 없습니다.
 
+## 후보 탐색
+
+원문은 후보를 DexScreener 런치 데이터에서만 찾습니다. 기본값 `DEX_DISCOVERY=launches`는 최신 token profile·boost 피드의 Solana 토큰 최대 30개를 읽고,
+`/tokens/v1/solana/...`로 해당 pool을 조회합니다. `search`는 `DEX_QUERIES` 검색어, `both`는 둘 다 사용합니다.
+보유자 조회 한도(token account 3만 개)를 넘는 대형 토큰은 보유자가 unknown으로 남으므로 신규 상장 토큰이 원문 전략에 맞습니다.
+
 ## 자료 출처
 
 | 필드 | 출처 | 키·비용 |
@@ -38,6 +44,8 @@ DexScreener가 제공하지 않는 원천 관측 시각, 보유자 이력, 큰 �
 | 처리 예산 | 수집마다 유동성 1만 달러 이상인 Solana 자산 중 가장 유동성이 큰 pool 기준 상위 `MARKET_OBSERVER_MAX_ASSETS`개만 관측 |
 | 큰 토큰 | token account 3만 개 또는 응답 10MB를 넘으면 보유자 조회를 중단하고 1시간 동안 재시도하지 않음. 보유자는 unknown |
 
+거래 구간·큰 지갑 매도는 SCAN이 평가하는 수집에서만 조회하고 429를 15초 뒤 두 번까지 재시도합니다. 1분 수집은 GeckoTerminal을 호출하지 않습니다.
+VET를 통과한 후보는 체결 직전에 Jupiter 깊이를 다시 조회합니다. 모델 추론 시간 때문에 견적이 60초 한도를 넘지 않게 하기 위함입니다.
 한 출처가 실패해도 다른 출처의 관측은 저장합니다. 실패한 필드는 unknown으로 남고 해당 진입은 결정론적 게이트에서 차단됩니다.
 GeckoTerminal 거래 목록의 색인 지연은 알 수 없으므로 마지막 구간의 최근 체결이 늦게 반영될 수 있습니다.
 

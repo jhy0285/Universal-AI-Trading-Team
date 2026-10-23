@@ -10,7 +10,7 @@
 전역 `LLM_PROVIDER=llama_cpp`와 환경변수의 모델 ID를 사용하며 API 키가 필요 없습니다.
 로컬 World Monitor의 실제 Redis/seed도 구성했고 fear/greed·prediction 데이터를 수집했습니다. 교차 신호가 없어 BOOK은 대기합니다.
 DexScreener에 없는 원천 시각·보유자 이력·큰 지갑 매도·실행 깊이는 무료 공개 API로 채웁니다([무료 시장 관측](docs/market-observer.md)).
-이 자료가 하나라도 없거나 오래되면 해당 진입은 계속 차단합니다.
+이 자료가 하나라도 없거나 오래되면 해당 진입은 계속 차단합니다. 후보는 기본적으로 DexScreener 신규 상장 피드에서 찾습니다(`DEX_DISCOVERY`).
 자동 수집이 실행 중이라는 사실은 체결 조건이 충족됐다는 의미가 아닙니다. [자동 페이퍼 운영](docs/autonomous-paper.md)을 참고하세요.
 합성 데모 자료를 이 결측의 대체물로 사용하지 않습니다. 구체적인 결과는 [검증 보고서](docs/validation-report.md)를 확인하세요.
 

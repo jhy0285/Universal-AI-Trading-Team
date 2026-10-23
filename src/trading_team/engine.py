@@ -63,6 +63,17 @@ from trading_team.storage import (
 D = Decimal
 
 
+VET_TASK = (
+    "Python has already verified this candidate's required observations; do not reject for "
+    "missing data. Judge only what needs judgement: signal_priced_in (is the holder growth "
+    "already reflected in price_change_h1_percent and derived.price_growth_fraction?), "
+    "uses_world_news, and forecasts for a short holding period: win_probability, "
+    "win_payoff_ratio (average win / average loss) and expected_return_fraction. Paper fees are "
+    "max(0.45%, $0.95) per fill, paid on entry and exit. Forecasts are estimates, never observed "
+    "facts; use null when you cannot estimate. Cite evidence_id in evidence."
+)
+
+
 def growth(current, before) -> str | None:
     if current is None or before is None or before <= 0:
         return None
@@ -111,13 +122,15 @@ def analysis_snapshot(snapshot: MarketSnapshot, *, scan: bool = False) -> dict:
         return snapshot.model_dump(mode="json", include=fields) | {"derived": derived(snapshot)}
     data = snapshot.model_dump(mode="json", exclude={"buy_quote", "sell_quote"})
     data["derived"] = derived(snapshot)
+    # Entry depth only: exit depth is quoted by RISK for the held quantity, and an absent
+    # sell side read as "missing data" to the model.
+    quote = snapshot.buy_quote
     data["execution_observations"] = {
-        side: {
+        "buy": {
             "present": quote is not None,
             "observed_at": quote.observed_at.isoformat() if quote else None,
             "source": quote.source if quote else None,
         }
-        for side, quote in (("buy", snapshot.buy_quote), ("sell", snapshot.sell_quote))
     }
     return data
 
@@ -527,10 +540,9 @@ class Desk:
                             analysis = await self.runtime.generate(
                                 "VET",
                                 {
-                                    "task": "Evaluate the supplied candidate. Reject if required "
-                                    "observations are missing. Forecast inputs are estimates, never "
-                                    "observed facts; use null when you cannot estimate. Cite "
-                                    "evidence_id in evidence.",
+                                    "task": VET_TASK,
+                                    "data_checks": "passed: Python verified every required "
+                                    "observation, freshness and on-chain fact before this call",
                                     "snapshot": analysis_snapshot(snapshot),
                                     "evidence_id": snapshot.digest,
                                 },
