@@ -368,7 +368,7 @@ class DeskModel:
             rows = payload["snapshots"]
             return Reply(
                 schema(
-                    candidate_ids=[x["asset_id"] for x in rows],
+                    candidate_ids=[x["candidate_id"] for x in rows],
                     evidence=[x["evidence_id"] for x in rows],
                     explanation="ranked by derived holder growth",
                 ),

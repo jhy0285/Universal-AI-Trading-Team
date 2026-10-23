@@ -55,6 +55,7 @@
 고정 CPU runtime·검증된 GGUF 하나를 사용하고, 도구·MCP·agent 모드는 비활성화합니다. 네 역할의 실제 로컬 schema probe를 통과했습니다.
 로컬 토큰은 `local_inference_usage`로 보존하며 외부 API 요금으로 환산하지 않습니다.
 SCAN의 후보·근거와 VET·BOOK의 근거는 호출마다 제공한 ID만 허용하는 enum schema로 요청합니다. 문법 제약 모델은 문장을 쓸 수 없고 다른 Provider는 검증에서 거절됩니다.
+모델에는 44자 mint와 64자 해시 대신 짧은 핸들(A1·E1…)을 보여 주고, Python이 원래 ID로 되돌려 검증·기록합니다. 긴 ID 하나가 수십 토큰의 생성 비용이기 때문입니다.
 SCAN은 같은 후보를 한 번만 평가하고, 근거 ID를 인용하지 않은 후보는 `SCAN_EVIDENCE_NOT_CITED`로 거절합니다.
 SCAN·VET 입력에는 Python이 계산한 보유자·가격 증가율과 구간별 매수·매도 수를 함께 제공합니다.
 모델 출력 schema의 Decimal 필드는 JSON number만 허용합니다. 제약 없는 문자열 분기는 constrained decoder가 수치 범위를 우회하게 합니다.

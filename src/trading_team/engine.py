@@ -65,8 +65,8 @@ D = Decimal
 
 
 SCAN_TASK = (
-    "Rank at most 10 candidates by derived.holder_growth_fraction, computed by Python. A "
-    "candidate whose price grows faster than its holders must not rank above one whose holders "
+    "Rank at most 10 candidate_id values by derived.holder_growth_fraction, computed by Python. "
+    "A candidate whose price grows faster than its holders must not rank above one whose holders "
     "grow faster. Cite each chosen candidate's evidence_id in evidence. No orders or sizes."
 )
 VET_TASK = (
@@ -111,7 +111,6 @@ def analysis_snapshot(snapshot: MarketSnapshot, *, scan: bool = False) -> dict:
         # Ranking needs growth, not raw timestamps or windows: derived carries those compactly,
         # which keeps the prompt short enough for CPU models.
         fields = {
-            "asset_id",
             "symbol",
             "price",
             "previous_price",
@@ -503,22 +502,35 @@ class Desk:
                     best[snapshot.asset_id] = snapshot
             eligible = list(best.values())[:30]
             if eligible:
-                scan = recorded_scan or await self.runtime.generate(
-                    "SCAN",
-                    {
-                        "task": SCAN_TASK,
-                        "snapshots": [
-                            analysis_snapshot(x, scan=True) | {"evidence_id": x.digest}
-                            for x in eligible
+                if recorded_scan is not None:
+                    scan = recorded_scan
+                else:
+                    # Short handles stand in for 44-character mints and 64-character hashes:
+                    # each long ID costs dozens of generated tokens on a CPU model.
+                    ranked = await self.runtime.generate(
+                        "SCAN",
+                        {
+                            "task": SCAN_TASK,
+                            "snapshots": [
+                                analysis_snapshot(x, scan=True)
+                                | {"candidate_id": f"A{i}", "evidence_id": f"E{i}"}
+                                for i, x in enumerate(eligible, 1)
+                            ],
+                        },
+                        cited(
+                            ScanOutput,
+                            candidate_ids=[f"A{i}" for i in range(1, len(eligible) + 1)],
+                            evidence=[f"E{i}" for i in range(1, len(eligible) + 1)],
+                        ),
+                        cycle_id,
+                    )
+                    scan = ScanOutput(
+                        candidate_ids=[
+                            eligible[int(x[1:]) - 1].asset_id for x in ranked.candidate_ids
                         ],
-                    },
-                    cited(
-                        ScanOutput,
-                        candidate_ids=[x.asset_id for x in eligible],
-                        evidence=[x.digest for x in eligible],
-                    ),
-                    cycle_id,
-                )
+                        evidence=[eligible[int(x[1:]) - 1].digest for x in ranked.evidence],
+                        explanation=ranked.explanation,
+                    )
                 known = {x.asset_id: x for x in eligible}
                 if not set(scan.candidate_ids) <= {x.asset_id for x in snapshots} or not set(
                     scan.evidence
@@ -545,17 +557,20 @@ class Desk:
                             raise LLMError("RECORDED_VET_MISSING")
                     else:
                         try:
-                            analysis = await self.runtime.generate(
+                            answer = await self.runtime.generate(
                                 "VET",
                                 {
                                     "task": VET_TASK,
                                     "data_checks": "passed: Python verified every required "
                                     "observation, freshness and on-chain fact before this call",
                                     "snapshot": analysis_snapshot(snapshot),
-                                    "evidence_id": snapshot.digest,
+                                    "evidence_id": "E1",
                                 },
-                                cited(VetOutput, required="evidence", evidence=[snapshot.digest]),
+                                cited(VetOutput, required="evidence", evidence=["E1"]),
                                 cycle_id,
+                            )
+                            analysis = VetOutput.model_validate(
+                                answer.model_dump() | {"evidence": [snapshot.digest]}
                             )
                         except LLMError as exc:
                             if exc.code.startswith("GLOBAL_CONFIGURATION_CHANGED"):
@@ -893,15 +908,19 @@ class Desk:
                     {"status": "blocked", "reason": "BOOK_EVIDENCE_CONTENT_REQUIRED", "orders": []},
                     clock(),
                 )
-            output = await self.runtime.generate(
+            answer = await self.runtime.generate(
                 "BOOK",
                 {
                     "task": "Estimate P(YES) before seeing any market prices. Abstain if source evidence is insufficient. Cite evidence_id in evidence.",
                     "question": question.model_dump(mode="json"),
-                    "evidence_id": stable_hash(question),
+                    "evidence_id": "E1",
                 },
-                cited(BookOutput, required="evidence", evidence=[stable_hash(question)]),
+                cited(BookOutput, required="evidence", evidence=["E1"]),
                 cycle_id,
+            )
+            # The handle stands for the question's hash; the record keeps the hash itself.
+            output = BookOutput.model_validate(
+                answer.model_dump() | {"evidence": [stable_hash(question)]}
             )
             self.record_agent(cycle_id, "BOOK", "passed", output.model_dump(mode="json"))
             if output.abstain or stable_hash(question) not in output.evidence:

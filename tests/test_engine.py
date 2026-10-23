@@ -77,13 +77,15 @@ class SchemaProvider:
         if "example" in payload:
             result = schema.model_validate(payload["example"])
         elif issubclass(schema, ScanOutput):
-            result = (
-                self.case.events[0].scan.model_copy(update={"candidate_ids": ["invented"]})
-                if self.forged
-                else self.case.events[0].scan
+            rows = payload["snapshots"]
+            result = ScanOutput(
+                candidate_ids=["invented"] if self.forged else [x["candidate_id"] for x in rows],
+                evidence=[x["evidence_id"] for x in rows],
+                explanation="Mock ranking",
             )
         elif issubclass(schema, VetOutput):
-            result = next(iter(self.case.events[0].vet.values()))
+            vet = next(iter(self.case.events[0].vet.values()))
+            result = vet.model_copy(update={"evidence": [payload["evidence_id"]]})
         elif issubclass(schema, BookOutput):
             result = BookOutput(
                 probability_yes=".75",
@@ -285,7 +287,7 @@ async def test_local_model_vet_reject_with_zero_estimates_completes(
         if "example" in payload:
             content = payload["example"]
         elif schema["name"] == "ScanOutput":
-            content = case.events[0].scan.model_dump(mode="json")
+            content = {"candidate_ids": ["A1"], "evidence": ["E1"], "explanation": "ranked"}
         elif schema["name"] == "VetOutput":
             cite = [payload["evidence_id"]] if evidence == "cited" else vet_reply["evidence"]
             content = vet_reply | {"evidence": cite}
@@ -320,7 +322,8 @@ async def test_local_model_vet_reject_with_zero_estimates_completes(
     assert all(result["integrity"].values())
     properties = schemas["VetOutput"]["properties"]
     digest = case.events[0].snapshots[0].digest
-    assert properties["evidence"]["items"]["enum"] == [digest]
+    # The model cites a short handle; the recorded analysis carries the snapshot hash.
+    assert properties["evidence"]["items"]["enum"] == ["E1"]
     assert properties["evidence"]["minItems"] == 1
     for name in ("win_probability", "win_payoff_ratio", "expected_return_fraction"):
         assert [x["type"] for x in properties[name]["anyOf"]] == ["number", "null"]
@@ -344,7 +347,7 @@ class FailingFirstVet(SchemaProvider):
             rows = payload["snapshots"]
             return Reply(
                 schema(
-                    candidate_ids=[x["asset_id"] for x in rows],
+                    candidate_ids=[x["candidate_id"] for x in rows],
                     evidence=[x["evidence_id"] for x in rows],
                     explanation="both",
                 ),
