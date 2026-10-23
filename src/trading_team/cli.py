@@ -44,6 +44,15 @@ async def execute(args):
             }
         if args.command == "probe":
             return await desk.probe()
+        if args.command == "prune":
+            from datetime import timedelta
+
+            from trading_team.domain import utcnow
+
+            days = settings.snapshot_retention_days if args.days is None else args.days
+            if days <= 0:
+                return {"status": "disabled", "reason": "SNAPSHOT_RETENTION_DAYS=0"}
+            return db.prune_snapshots(utcnow() - timedelta(days=days))
         if args.command == "collect":
             return await desk.collect()
         if args.command == "cycle":
@@ -92,6 +101,8 @@ def main():
         command.add_argument("--account", default="main")
         if name == "cycle":
             command.add_argument("--request-id")
+    prune = sub.add_parser("prune")
+    prune.add_argument("--days", type=int, help="override SNAPSHOT_RETENTION_DAYS")
     demo = sub.add_parser("demo")
     demo.add_argument("--account")
     replay = sub.add_parser("replay")

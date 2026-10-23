@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import signal
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -64,6 +64,14 @@ async def daily_report(desk: Desk) -> dict:
         account = lock_account(s, "main")
         audit(s, account, "DAILY_REPORT", facts)
     return facts
+
+
+async def retention(desk: Desk) -> dict:
+    days = desk.settings.snapshot_retention_days
+    if not days:
+        return {"status": "disabled"}
+    # Runs off the event loop so a large delete never delays the RISK job.
+    return await asyncio.to_thread(desk.db.prune_snapshots, utcnow() - timedelta(days=days))
 
 
 def build_scheduler(desk: Desk, leases: LeaseManager) -> AsyncIOScheduler:
@@ -206,6 +214,15 @@ def build_scheduler(desk: Desk, leases: LeaseManager) -> AsyncIOScheduler:
         args=["daily-report", lambda: daily_report(desk)],
         id="daily-report",
         name="CHIEF 23:00 Asia/Seoul",
+    )
+    scheduler.add_job(
+        invoke,
+        "cron",
+        hour=4,
+        minute=17,
+        args=["retention", lambda: retention(desk)],
+        id="retention",
+        name="Observation retention 04:17 Asia/Seoul",
     )
     return scheduler
 

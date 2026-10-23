@@ -107,6 +107,8 @@ class Settings(BaseSettings):
     market_observer_max_assets: int = Field(default=3, ge=1, le=10)
     # Optional free key from Jupiter's portal: 60 instead of 30 requests/minute.
     jupiter_api_key: SecretStr = SecretStr("")
+    # Unreferenced live observation evidence older than this is pruned daily; 0 keeps everything.
+    snapshot_retention_days: int = Field(default=14, ge=0, le=3650)
     state_dir: Path = Path(".state")
     quote_max_age_seconds: int = Field(default=60, ge=1, le=300)
     market_max_age_seconds: int = Field(default=300, ge=1, le=900)

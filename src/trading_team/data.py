@@ -129,6 +129,18 @@ class PublicDataClient:
 class DexScreener:
     BASE = "https://api.dexscreener.com"
 
+    @staticmethod
+    def _pairs_summary(body):
+        # Normalized market snapshots keep the fields used; the raw list keeps only identities.
+        pairs = body.get("pairs") if isinstance(body, dict) else body
+        return {
+            "pairs": [
+                [x.get("chainId"), x.get("pairAddress"), (x.get("baseToken") or {}).get("address")]
+                for x in (pairs if isinstance(pairs, list) else [])
+                if isinstance(x, dict)
+            ]
+        }
+
     def __init__(self, data: PublicDataClient):
         self.data = data
 
@@ -165,7 +177,11 @@ class DexScreener:
         if not query.strip() or len(query) > 100:
             raise DataError("DEX_QUERY_INVALID")
         body = await self.data.request(
-            "GET", self.BASE + "/latest/dex/search", kind="dex_search", params={"q": query}
+            "GET",
+            self.BASE + "/latest/dex/search",
+            kind="dex_search",
+            params={"q": query},
+            summarize=self._pairs_summary,
         )
         if not isinstance(body, dict) or not isinstance(body.get("pairs"), list):
             raise DataError("DEX_PAIRS_UNAVAILABLE")
@@ -213,7 +229,10 @@ class DexScreener:
             return []
         # The token endpoint accepts at most 30 addresses per request.
         body = await self.data.request(
-            "GET", f"{self.BASE}/tokens/v1/solana/{','.join(mints[:30])}", kind="dex_tokens"
+            "GET",
+            f"{self.BASE}/tokens/v1/solana/{','.join(mints[:30])}",
+            kind="dex_tokens",
+            summarize=self._pairs_summary,
         )
         if not isinstance(body, list):
             raise DataError("DEX_PAIRS_UNAVAILABLE")
@@ -232,7 +251,10 @@ class DexScreener:
         if chain != "solana" or not mint.isalnum() or len(mint) > 60:
             raise DataError("DEX_ORIGINAL_TOKEN_INVALID")
         body = await self.data.request(
-            "GET", self.BASE + "/latest/dex/tokens/" + quote(mint, safe=""), kind="dex_token"
+            "GET",
+            self.BASE + "/latest/dex/tokens/" + quote(mint, safe=""),
+            kind="dex_token",
+            summarize=self._pairs_summary,
         )
         if not isinstance(body, dict) or not isinstance(body.get("pairs"), list):
             raise DataError("DEX_PAIRS_UNAVAILABLE")

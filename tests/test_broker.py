@@ -207,3 +207,73 @@ def test_paper_initial_cash_setting_is_bounded():
     for value in ("0", "-1", "NaN", "100000001"):
         with pytest.raises(ValidationError):
             Settings(_env_file=None, paper_initial_cash=value)
+
+
+def test_retention_prunes_only_unreferenced_old_live_evidence(db, snapshot):
+    from sqlalchemy import inspect
+
+    from trading_team.domain import utcnow
+    from trading_team.storage import Decision, SnapshotRow
+
+    now = utcnow()
+    old, recent = now - timedelta(days=20), now - timedelta(days=1)
+
+    def row(id_, kind, at, asset="solana:untraded", provenance="live"):
+        return SnapshotRow(
+            id=id_,
+            asset_id=asset,
+            kind=kind,
+            source="test",
+            provenance=provenance,
+            fetched_at=at,
+            payload="{}",
+        )
+
+    with db.transaction() as s:
+        s.add_all(
+            [
+                row("raw-old", "dex_search", old),
+                row("raw-recent", "jupiter_quote", recent),
+                row("market-old", "market", old),
+                row("market-cited", "market", old),
+                row("market-traded", "market", old, asset="solana:traded"),
+                row("resolution-old", "prediction_resolution", old),
+                row("fixture-old", "market", old, provenance="fixture"),
+            ]
+        )
+        s.add(
+            Decision(
+                cycle_id="c",
+                account_id="main",
+                asset_id="solana:untraded",
+                snapshot_id="market-cited",
+                allowed=False,
+                reason="TEST",
+            )
+        )
+        s.add(
+            Position(
+                account_id="main",
+                asset_id="solana:traded",
+                quantity=D(0),
+                cost_basis=D(0),
+                initial_price=D(1),
+                peak_price=D(1),
+            )
+        )
+    result = db.prune_snapshots(now - timedelta(days=14))
+    assert (result["raw_responses"], result["market"]) == (1, 1)
+    with db.transaction() as s:
+        kept = {x.id for x in s.query(SnapshotRow)}
+    assert {"raw-old", "market-old"}.isdisjoint(kept)
+    assert {
+        "raw-recent",
+        "market-cited",
+        "market-traded",
+        "resolution-old",
+        "fixture-old",
+    } <= kept
+    assert all(PaperBroker(db).integrity("main").values())
+    db.initialize()  # Idempotent on an existing ledger, including the snapshot index.
+    names = {x["name"] for x in inspect(db.engine).get_indexes("data_snapshots")}
+    assert "ix_data_snapshots_kind_fetched_at" in names

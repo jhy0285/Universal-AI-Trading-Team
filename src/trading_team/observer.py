@@ -56,6 +56,16 @@ class JupiterQuotes:
     # The keyless bucket was observed refilling within 10 seconds; a shared IP may drain it.
     RETRY_AFTER = 10.0
 
+    @staticmethod
+    def _summary(body):
+        if not isinstance(body, dict):
+            return {"error": "unavailable"}
+        keep = ("inputMint", "outputMint", "inAmount", "outAmount", "contextSlot", "priceImpactPct")
+        route = body.get("routePlan") if isinstance(body.get("routePlan"), list) else []
+        return {k: body.get(k) for k in keep} | {
+            "route": [(x.get("swapInfo") or {}).get("label") for x in route if isinstance(x, dict)]
+        }
+
     def __init__(self, settings: Settings, data: PublicDataClient, solana: SolanaOnchain):
         self.key = settings.jupiter_api_key.get_secret_value()
         self.data, self.solana = data, solana
@@ -70,6 +80,7 @@ class JupiterQuotes:
                     "GET",
                     self.URL,
                     kind="jupiter_quote",
+                    summarize=self._summary,
                     params={
                         "inputMint": input_mint,
                         "outputMint": output_mint,

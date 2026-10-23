@@ -267,3 +267,19 @@ def test_model_input_keeps_execution_depth_in_deterministic_layer(snapshot):
     assert data["derived"]["holder_growth_fraction"] == "0.1000"
     assert analysis_snapshot(snapshot, scan=True)["holder_count"] == snapshot.holder_count
     assert snapshot.buy_quote.levels
+
+
+async def test_daily_retention_job_is_scheduled_and_can_be_disabled(db, settings):
+    from trading_team.worker import retention
+
+    desk = Desk(settings.model_copy(update={"snapshot_retention_days": 0}), db)
+    try:
+        assert await retention(desk) == {"status": "disabled"}
+        jobs = {job.id: job for job in build_scheduler(desk, LeaseManager(db)).get_jobs()}
+        assert "retention" in jobs
+        enabled = Desk(settings, db)
+        result = await retention(enabled)
+        await enabled.close()
+        assert result["raw_responses"] == 0 and result["market"] == 0
+    finally:
+        await desk.close()
