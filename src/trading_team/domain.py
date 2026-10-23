@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    WithJsonSchema,
+    create_model,
+    model_validator,
+)
 
 Nonnegative = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
 Positive = Annotated[Decimal, Field(gt=0, allow_inf_nan=False)]
@@ -166,6 +175,34 @@ class BookOutput(StrictModel):
         if not self.abstain and self.probability_yes is None:
             raise ValueError("non-abstaining BOOK requires a probability")
         return self
+
+
+def cited[M: BaseModel](
+    model: type[M], *, required: str | None = None, **choices: Sequence[str]
+) -> type[M]:
+    """`model` with identifier lists limited to the supplied values (a JSON-schema enum).
+
+    Constrained decoders then cannot write prose or invented IDs into these fields, and other
+    providers fail schema validation instead. `required` must cite at least one value.
+    """
+    overrides: dict = {}
+    for name, values in choices.items():
+        allowed = tuple(dict.fromkeys(values))
+        if not allowed:
+            raise ValueError(f"{name} has nothing to cite")
+        limit = next(
+            (m.max_length for m in model.model_fields[name].metadata if hasattr(m, "max_length")),
+            None,
+        )
+        # Always an enum (never const): the most widely supported constraint across providers.
+        choice = Annotated[
+            Literal[allowed], WithJsonSchema({"type": "string", "enum": list(allowed)})
+        ]
+        overrides[name] = (
+            list[choice],
+            Field(min_length=1 if name == required else 0, max_length=limit),
+        )
+    return create_model(model.__name__, __base__=model, **overrides)
 
 
 class ChiefOutput(StrictModel):

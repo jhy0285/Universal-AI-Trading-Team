@@ -66,7 +66,10 @@ async def test_autonomous_collection_and_risk_do_not_wait_for_model(db, settings
     settings = settings.model_copy(update={"autonomous_enabled": True})
     desk = Desk(settings, db)
 
-    async def collected():
+    calls = []
+
+    async def collected(**kwargs):
+        calls.append(kwargs)
         return {"count": 3, "errors": [], "snapshots": []}
 
     monkeypatch.setattr(desk, "collect", collected)
@@ -82,6 +85,8 @@ async def test_autonomous_collection_and_risk_do_not_wait_for_model(db, settings
         with db.transaction() as session:
             job = session.get(AutomationJob, "market-collect")
             assert job.state == "completed" and json.loads(job.result)["count"] == 3
+        # The minute collection leaves trade windows to SCAN time.
+        assert calls == [{"trades": False}]
     finally:
         await desk.close()
 

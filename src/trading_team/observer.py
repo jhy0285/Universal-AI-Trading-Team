@@ -52,6 +52,7 @@ class JupiterQuotes:
     """Read-only swap quotes. No swap transaction is ever requested or signed."""
 
     URL = "https://api.jup.ag/swap/v1/quote"
+    SOURCE = "jupiter_quote_ladder"
     # The keyless bucket was observed refilling within 10 seconds; a shared IP may drain it.
     RETRY_AFTER = 10.0
 
@@ -136,7 +137,7 @@ class JupiterQuotes:
             reference_price=levels[0].price,
             levels=levels,
             observed_at=observed_at,
-            source="jupiter_quote_ladder",
+            source=self.SOURCE,
             source_reference=f"{self.URL}?inputMint={pair[0]}&outputMint={pair[1]}",
             provenance="live",
         )
@@ -147,6 +148,8 @@ class TradeWindows:
 
     URL = "https://api.geckoterminal.com/api/v2/networks/solana/pools/{}/trades"
     PAGE = 300
+    # Only SCAN-time collections ask for trades, so waiting out a shared-IP 429 is affordable.
+    RETRY_AFTER = 15.0
 
     def __init__(self, data: PublicDataClient):
         self.data = data
@@ -160,14 +163,21 @@ class TradeWindows:
     async def observe(self, pool: str, mint: str, end: datetime, holders: list[str] | None) -> dict:
         if not pool.isalnum() or len(pool) > 60:
             raise DataError("TRADES_POOL_INVALID")
-        await self.pacer.wait()
-        body = await self.data.request(
-            "GET",
-            self.URL.format(pool),
-            kind="geckoterminal_trades",
-            headers={"Accept": "application/json"},
-            summarize=self._summary,
-        )
+        for attempt in range(3):
+            await self.pacer.wait()
+            try:
+                body = await self.data.request(
+                    "GET",
+                    self.URL.format(pool),
+                    kind="geckoterminal_trades",
+                    headers={"Accept": "application/json"},
+                    summarize=self._summary,
+                )
+                break
+            except DataError as exc:
+                if exc.code != "DATA_HTTP_429" or attempt == 2:
+                    raise
+                await asyncio.sleep(self.RETRY_AFTER)
         trades = []
         try:
             rows = body["data"]
@@ -243,7 +253,7 @@ class MarketObserver:
         return ranked[: self.settings.market_observer_max_assets]
 
     async def observe(
-        self, discovered: list[MarketSnapshot]
+        self, discovered: list[MarketSnapshot], *, trades: bool = True
     ) -> tuple[list[MarketSnapshot], list[dict]]:
         if not self.settings.market_observer_enabled:
             return discovered, []
@@ -252,7 +262,7 @@ class MarketObserver:
         for item in discovered:
             if (item.asset_id, item.pair_id) in chosen:
                 try:
-                    item, notes = await self.observe_entry(item)
+                    item, notes = await self.observe_entry(item, trades=trades)
                     errors.extend(notes)
                 except DataError as exc:
                     errors.append(
@@ -265,6 +275,10 @@ class MarketObserver:
                     )
             result.append(item)
         return result, errors
+
+    def entry_depth(self) -> Decimal:
+        """Buy depth to observe: twice the largest entry the 6% cap allows on the paper balance."""
+        return 2 * max(MIN_ORDER, self.settings.paper_initial_cash * POSITION_CAP)
 
     async def _decimals(self, mint: str) -> int:
         if mint not in self.decimals:
@@ -299,12 +313,13 @@ class MarketObserver:
                 return item
         return None
 
-    async def observe_entry(self, snapshot: MarketSnapshot) -> tuple[MarketSnapshot, list[dict]]:
+    async def observe_entry(
+        self, snapshot: MarketSnapshot, *, trades: bool = True
+    ) -> tuple[MarketSnapshot, list[dict]]:
         mint = snapshot.asset_id.split(":", 1)[1]
         notes = []
         decimals = await self._decimals(mint)
-        target = 2 * max(MIN_ORDER, self.settings.paper_initial_cash * POSITION_CAP)
-        buy = await self.quotes.ladder(mint, decimals, "buy", target)
+        buy = await self.quotes.ladder(mint, decimals, "buy", self.entry_depth())
         updates: dict = {
             "observed_at": buy.observed_at,
             "price": buy.reference_price,
@@ -357,17 +372,35 @@ class MarketObserver:
                 notes.append(
                     {"asset_id": snapshot.asset_id, "source": "solana", "reason": exc.code}
                 )
-        try:
-            trades = await self.trades.observe(snapshot.pair_id, mint, buy.observed_at, holders)
-            updates |= {
-                "windows": trades["windows"],
-                "large_holder_selling": trades["large_holder_selling"],
-            }
-        except DataError as exc:
-            notes.append(
-                {"asset_id": snapshot.asset_id, "source": "geckoterminal", "reason": exc.code}
-            )
+        if trades:
+            try:
+                found = await self.trades.observe(snapshot.pair_id, mint, buy.observed_at, holders)
+                updates |= {
+                    "windows": found["windows"],
+                    "large_holder_selling": found["large_holder_selling"],
+                }
+            except DataError as exc:
+                notes.append(
+                    {"asset_id": snapshot.asset_id, "source": "geckoterminal", "reason": exc.code}
+                )
         return MarketSnapshot.model_validate(snapshot.model_dump() | updates), notes
+
+    def can_requote(self, snapshot: MarketSnapshot) -> bool:
+        return (
+            self.settings.market_observer_enabled
+            and snapshot.provenance == "live"
+            and snapshot.buy_quote is not None
+            and snapshot.buy_quote.source == JupiterQuotes.SOURCE
+        )
+
+    async def requote(self, snapshot: MarketSnapshot) -> MarketSnapshot:
+        """Fresh buy depth for an analysed pool; every other observation stays as analysed."""
+        mint = snapshot.asset_id.split(":", 1)[1]
+        buy = await self.quotes.ladder(mint, await self._decimals(mint), "buy", self.entry_depth())
+        return MarketSnapshot.model_validate(
+            snapshot.model_dump()
+            | {"observed_at": buy.observed_at, "price": buy.reference_price, "buy_quote": buy}
+        )
 
     async def observe_exit(self, snapshot: MarketSnapshot, quantity: Decimal) -> MarketSnapshot:
         """Executable bids for the held quantity; marks the position at the bid."""

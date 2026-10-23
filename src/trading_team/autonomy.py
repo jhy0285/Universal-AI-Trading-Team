@@ -63,7 +63,7 @@ async def ensure_model(desk) -> dict:
 
 
 async def collect(desk) -> dict:
-    result = await desk.collect()
+    result = await desk.collect(trades=False)
     # Persist bounded counts and error codes, rather than duplicating every raw snapshot.
     return {
         "status": "observed",
@@ -105,14 +105,12 @@ def status(desk) -> dict:
         "largest_token_account_share",
         "onchain_observed_at",
         "contract_safe",
-        "large_holder_selling",
         "buy_quote",
     )
     complete = 0
     for snapshot in snapshots:
+        # Trade windows and large-holder sales are read when SCAN evaluates, not every minute.
         gaps = [field for field in required if getattr(snapshot, field) is None]
-        if len(snapshot.windows) != 2:
-            gaps.append("two_disjoint_transaction_windows")
         if not snapshot.fresh(now, desk.settings.market_max_age_seconds):
             gaps.append("fresh_market_observation")
         for field in gaps:
@@ -145,6 +143,7 @@ def status(desk) -> dict:
             "snapshots": len(snapshots),
             "complete_observations": complete,
             "missing_fields": missing,
+            "collected_at_scan": ["windows", "large_holder_selling"],
         },
         "jobs": jobs,
         "scan_interval_seconds": 900,

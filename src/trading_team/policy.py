@@ -142,6 +142,26 @@ def vet_gate(
     return GateResult(allowed=True, reason="VET_PASS")
 
 
+def vet_precheck(snapshot: MarketSnapshot, now: datetime) -> GateResult:
+    """The VET checks that need no model, in VET's own order, before spending model time.
+
+    Model judgements are held neutral (passing), so the first failure is a data failure that
+    VET would reject anyway. The full vet_gate still runs after the model, with the real size.
+    """
+    neutral = VetOutput(
+        verdict="PASS",
+        signal_priced_in=False,
+        uses_world_news=False,
+        win_probability=None,
+        win_payoff_ratio=None,
+        expected_return_fraction=D(1),
+        evidence=[snapshot.digest],
+        explanation="data-only precheck",
+    )
+    result = vet_gate(snapshot, neutral, MIN_ORDER, now)
+    return GateResult(allowed=True, reason="VET_DATA_READY") if result.allowed else result
+
+
 def risk_decision(snapshot: MarketSnapshot | None, now: datetime, attempts: int = 3) -> GateResult:
     valid = (
         snapshot is not None

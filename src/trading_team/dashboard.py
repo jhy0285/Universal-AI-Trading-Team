@@ -161,10 +161,31 @@ def main():
         st.caption(
             "결측 필드는 null로 유지됩니다. 보유자·온체인·실행 호가가 검증되어야 진입할 수 있습니다."
         )
+        snapshots = request("/snapshots?provenance=" + selected.get("provenance", "live")) or []
+        st.subheader("관측 요약")
+        st.caption("Jupiter 깊이·Solana 보유자·GeckoTerminal 거래로 채운 pool만 표시합니다.")
         st.dataframe(
-            request("/snapshots?provenance=" + selected.get("provenance", "live")) or [],
+            [
+                {
+                    "asset": x["asset_id"],
+                    "pool": x["pair_id"],
+                    "observed_at": x["observed_at"],
+                    "price": x["price"],
+                    "holders": x["holder_count"],
+                    "previous_holders": x["previous_holder_count"],
+                    "largest_wallet_share": x["largest_token_account_share"],
+                    "contract_safe": x["contract_safe"],
+                    "windows_buys_sells": [[w["buys"], w["sells"]] for w in x["windows"]],
+                    "large_holder_selling": x["large_holder_selling"],
+                    "depth_levels": len((x.get("buy_quote") or {}).get("levels") or []),
+                }
+                for x in snapshots
+                if x.get("observed_at")
+            ],
             width="stretch",
         )
+        st.subheader("전체 스냅샷")
+        st.dataframe(snapshots, width="stretch")
         st.subheader("필터 결과")
         st.dataframe(request("/decisions" + suffix) or [], width="stretch")
     elif page == "Prediction Opportunities":

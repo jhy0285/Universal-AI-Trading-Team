@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     worldmonitor_redis_token: SecretStr = SecretStr("")
     worldmonitor_seed_enabled: bool = False
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
+    # Original strategy: candidates come from DexScreener launch data only.
+    dex_discovery: Literal["launches", "search", "both"] = "launches"
     dex_queries: str = "BONK"
     market_data_feed_url: str = ""
     market_data_feed_api_key: SecretStr = SecretStr("")

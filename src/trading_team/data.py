@@ -178,6 +178,56 @@ class DexScreener:
                 continue
         return result
 
+    @staticmethod
+    def _launch_summary(body):
+        return [
+            [x.get("chainId"), x.get("tokenAddress")]
+            for x in (body if isinstance(body, list) else [])
+            if isinstance(x, dict)
+        ]
+
+    async def launches(self) -> list[MarketSnapshot]:
+        """Pools of the newest Solana tokens in DexScreener's launch feeds (profiles, boosts)."""
+        mints, failures = [], []
+        for path in ("/token-profiles/latest/v1", "/token-boosts/latest/v1"):
+            try:
+                body = await self.data.request(
+                    "GET", self.BASE + path, kind="dex_launches", summarize=self._launch_summary
+                )
+            except DataError as exc:
+                failures.append(exc.code)
+                continue
+            for item in body if isinstance(body, list) else []:
+                mint = item.get("tokenAddress") if isinstance(item, dict) else None
+                if (
+                    isinstance(mint, str)
+                    and item.get("chainId") == "solana"
+                    and mint.isalnum()
+                    and 32 <= len(mint) <= 44
+                    and mint not in mints
+                ):
+                    mints.append(mint)
+        if not mints:
+            if failures:
+                raise DataError(failures[0])
+            return []
+        # The token endpoint accepts at most 30 addresses per request.
+        body = await self.data.request(
+            "GET", f"{self.BASE}/tokens/v1/solana/{','.join(mints[:30])}", kind="dex_tokens"
+        )
+        if not isinstance(body, list):
+            raise DataError("DEX_PAIRS_UNAVAILABLE")
+        now, wanted = utcnow(), set(mints[:30])
+        result = []
+        for item in body:
+            try:
+                snapshot = self.normalize(item, now)
+            except (DataError, ValueError, TypeError, AttributeError):
+                continue
+            if snapshot.chain == "solana" and snapshot.asset_id.split(":", 1)[1] in wanted:
+                result.append(snapshot)
+        return result
+
     async def token(self, chain: str, mint: str) -> list[MarketSnapshot]:
         if chain != "solana" or not mint.isalnum() or len(mint) > 60:
             raise DataError("DEX_ORIGINAL_TOKEN_INVALID")

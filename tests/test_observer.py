@@ -56,6 +56,10 @@ class Market:
                 },
             )
         if host == "api.dexscreener.com":
+            if path.startswith(("/token-profiles/", "/token-boosts/")):
+                return httpx.Response(200, json=[{"chainId": "solana", "tokenAddress": MINT}])
+            if path.startswith("/tokens/v1/solana/"):
+                return httpx.Response(200, json=[dex_pair() | self.pair])
             return httpx.Response(200, json={"pairs": [dex_pair() | self.pair]})
         if host == "api.geckoterminal.com":
             assert path.endswith(f"/pools/{POOL}/trades")
@@ -124,6 +128,8 @@ def market(monkeypatch):
         return None
 
     monkeypatch.setattr(Pacer, "wait", no_wait)
+    monkeypatch.setattr(JupiterQuotes, "RETRY_AFTER", 0)
+    monkeypatch.setattr(TradeWindows, "RETRY_AFTER", 0)
     return Market()
 
 
@@ -342,3 +348,119 @@ async def test_jupiter_rate_limit_retries_then_leaves_pool_unobserved(
     assert notes == [
         {"asset_id": f"solana:{MINT}", "source": "execution_quote", "reason": "DATA_HTTP_429"}
     ]
+
+
+class DeskModel:
+    """Cites exactly the IDs it is offered; optionally moves the market while 'thinking'."""
+
+    def __init__(self, during_vet=None):
+        self.during_vet, self.schemas = during_vet, []
+
+    async def generate(self, messages, schema):
+        from trading_team.domain import ChiefOutput, ScanOutput
+        from trading_team.llm import Reply
+
+        payload = json.loads(messages[-1]["content"])
+        self.schemas.append(schema.__name__)
+        if "example" in payload:
+            return Reply(schema.model_validate(payload["example"]), {})
+        if issubclass(schema, ScanOutput):
+            rows = payload["snapshots"]
+            return Reply(
+                schema(
+                    candidate_ids=[x["asset_id"] for x in rows],
+                    evidence=[x["evidence_id"] for x in rows],
+                    explanation="ranked by derived holder growth",
+                ),
+                {},
+            )
+        if issubclass(schema, VetOutput):
+            if self.during_vet:
+                self.during_vet()
+            return Reply(
+                schema.model_validate(
+                    analysis_payload(payload["evidence_id"]) | {"explanation": "observed"}
+                ),
+                {},
+            )
+        return Reply(ChiefOutput(summary="recorded facts", evidence=[]), {})
+
+    async def close(self):
+        pass
+
+
+def analysis_payload(digest: str) -> dict:
+    return {
+        "verdict": "PASS",
+        "signal_priced_in": False,
+        "uses_world_news": False,
+        "win_probability": "0.7",
+        "win_payoff_ratio": "2",
+        "expected_return_fraction": "0.1",
+        "evidence": [digest],
+    }
+
+
+async def live_desk(db, settings, market, client, model, *, history: bool):
+    from trading_team.domain import utcnow
+    from trading_team.engine import Desk
+    from trading_team.llm import LLMRuntime
+
+    market.now = utcnow().replace(microsecond=0)
+    if history:
+        earlier = market.now - timedelta(minutes=6)
+        previous = DexScreener.normalize(dex_pair(), earlier).model_copy(
+            update={
+                "observed_at": earlier,
+                "price": D("0.00099"),
+                "holder_count": 2,
+                "holder_observed_at": earlier,
+            }
+        )
+        PaperBroker(db).save_snapshot(previous)
+    market.holders = 5
+    desk = Desk(settings, db, LLMRuntime(settings, model), PublicDataClient(db, client))
+    assert (await desk.probe())["verified"]
+    return desk
+
+
+async def test_live_cycle_requotes_and_fills_on_fresh_depth(db, settings, market):
+    model = DeskModel()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(market.handle)) as client:
+        desk = await live_desk(db, settings, market, client, model, history=True)
+        result = await desk.run_cycle("main", "observed-entry")
+        await desk.close()
+    assert result["status"] == "completed", result
+    assert [x["reason"] for x in result["decisions"]] == ["VET_PASS"]
+    order = result["orders"][0]
+    assert order["status"] == "filled" and D(order["notional"]) <= 60
+    # SCAN offered only the supplied IDs: an enum the provider must cite from.
+    assert model.schemas.count("ScanOutput") == 2 and model.schemas.count("VetOutput") == 2
+    # Depth was quoted again for execution: two ladders of four quotes.
+    quotes = [r for r in market.requests if r.url.host == "api.jup.ag"]
+    assert len(quotes) == 8
+    assert all(PaperBroker(db).integrity("main").values())
+
+
+async def test_price_move_while_model_thinks_blocks_the_fill(db, settings, market):
+    def pump():
+        market.usd *= D("1.1")  # About 21% higher price on the constant-product curve.
+
+    model = DeskModel(during_vet=pump)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(market.handle)) as client:
+        desk = await live_desk(db, settings, market, client, model, history=True)
+        result = await desk.run_cycle("main", "moved")
+        await desk.close()
+    assert [x["reason"] for x in result["decisions"]] == ["PRICE_MOVED_SINCE_ANALYSIS"]
+    assert result["orders"] == []
+
+
+async def test_data_rejects_are_decided_before_any_model_call(db, settings, market):
+    model = DeskModel()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(market.handle)) as client:
+        desk = await live_desk(db, settings, market, client, model, history=False)
+        result = await desk.run_cycle("main", "no-history")
+        await desk.close()
+    assert [x["reason"] for x in result["decisions"]] == ["HOLDER_HISTORY_UNAVAILABLE"]
+    # Only the probe and the factual CHIEF report used the model; no SCAN or VET time was spent.
+    assert model.schemas.count("ScanOutput") == 1 and model.schemas.count("VetOutput") == 1

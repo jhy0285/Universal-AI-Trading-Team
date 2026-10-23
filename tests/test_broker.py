@@ -5,7 +5,7 @@ from decimal import Decimal as D
 import pytest
 from sqlalchemy import func, select
 
-from trading_team.broker import PaperBroker
+from trading_team.broker import MARK_MAX_AGE_SECONDS, PaperBroker
 from trading_team.domain import Level
 from trading_team.metrics import performance
 from trading_team.storage import Account, LedgerEntry, PaperOrder, Position
@@ -140,7 +140,12 @@ def test_risk_exit_fee_and_closed_trade_metrics(db, snapshot, case):
 
 def test_stale_equity_never_zero_filled(db, snapshot):
     buy(db, snapshot)
-    metrics = performance(db, "paper", now=snapshot.fetched_at + timedelta(seconds=301))
+    # Marks stay valid for two 5-minute RISK runs, so one run's delay does not unprice equity.
+    between_runs = performance(db, "paper", now=snapshot.fetched_at + timedelta(seconds=400))
+    assert between_runs["equity"] is not None
+    metrics = performance(
+        db, "paper", now=snapshot.fetched_at + timedelta(seconds=MARK_MAX_AGE_SECONDS + 1)
+    )
     assert metrics["equity"] is None and metrics["net_pnl"] is None
     assert metrics["cash"] is not None
 

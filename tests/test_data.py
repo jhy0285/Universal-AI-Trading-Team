@@ -207,3 +207,33 @@ async def test_polymarket_execution_depth_has_producer_timestamp():
         body["timestamp"] = "0"
         with pytest.raises(DataError, match="PREDICTION_QUOTE_TIMESTAMP_UNKNOWN"):
             await adapter.polymarket_quote("123", "prediction:polymarket:1:yes", "buy")
+
+
+async def test_launch_discovery_reads_solana_launch_feeds():
+    mint, other = "L" * 40, "K" * 40
+    seen = []
+
+    def handler(request):
+        path = request.url.path
+        seen.append(path)
+        if path == "/token-profiles/latest/v1":
+            feed = [
+                {"chainId": "solana", "tokenAddress": mint},
+                {"chainId": "base", "tokenAddress": "0x" + "a" * 40},
+                {"chainId": "solana", "tokenAddress": "bad/address"},
+            ]
+            return httpx.Response(200, json=feed)
+        if path == "/token-boosts/latest/v1":
+            return httpx.Response(500, json={})
+        assert path == f"/tokens/v1/solana/{mint}"
+        pairs = [
+            {"chainId": "solana", "pairAddress": "pool1", "baseToken": {"address": mint}},
+            {"chainId": "solana", "pairAddress": "pool2", "baseToken": {"address": other}},
+        ]
+        return httpx.Response(200, json=pairs)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        found = await DexScreener(PublicDataClient(client=client)).launches()
+    # One feed failing does not hide the other; only the requested Solana launch is kept.
+    assert [(x.asset_id, x.pair_id) for x in found] == [(f"solana:{mint}", "pool1")]
+    assert seen[-1] == f"/tokens/v1/solana/{mint}"

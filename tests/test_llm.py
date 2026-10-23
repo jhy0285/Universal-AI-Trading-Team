@@ -277,3 +277,35 @@ def test_model_output_decimals_are_numbers_without_free_text():
         '"evidence":[],"explanation":"x"}'
     )
     assert recorded.win_probability == Decimal("0.7") and recorded.win_payoff_ratio == 0
+
+
+def test_cited_schema_admits_only_supplied_identifiers():
+    from pydantic import ValidationError
+
+    from trading_team.domain import cited
+
+    scan = cited(ScanOutput, candidate_ids=["solana:A", "solana:B"], evidence=["e1", "e2"])
+    properties = output_schema(scan)["properties"]
+    assert properties["candidate_ids"]["items"] == {
+        "type": "string",
+        "enum": ["solana:A", "solana:B"],
+    }
+    assert properties["candidate_ids"]["maxItems"] == 10 and scan.__name__ == "ScanOutput"
+    with pytest.raises(ValidationError):
+        scan(candidate_ids=["solana:A"], evidence=["holder_count rose"], explanation="prose")
+    vet = cited(VetOutput, required="evidence", evidence=["e1"])
+    # One allowed value is still an enum, and at least one citation is required.
+    assert output_schema(vet)["properties"]["evidence"]["items"]["enum"] == ["e1"]
+    with pytest.raises(ValidationError):
+        vet.model_validate(
+            {
+                "verdict": "REJECT",
+                "signal_priced_in": False,
+                "uses_world_news": False,
+                "win_probability": None,
+                "win_payoff_ratio": None,
+                "expected_return_fraction": None,
+                "evidence": [],
+                "explanation": "nothing cited",
+            }
+        )
