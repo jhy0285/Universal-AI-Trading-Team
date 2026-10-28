@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from trading_team.cli_process import run_process
 from trading_team.cli_registry import CLI_PROFILES, resolve_executable
-from trading_team.llm_types import LLMError, Reply, T
+from trading_team.llm_types import LLMError, Reply, T, schema_detail
 from trading_team.settings import Settings
 
 
@@ -407,7 +407,7 @@ class CLIProvider:
                 IndexError,
                 ValidationError,
             ) as exc:
-                raise LLMError("CLI_SCHEMA_INVALID") from exc
+                raise LLMError("CLI_SCHEMA_INVALID", detail=schema_detail(exc)) from exc
 
     def parse(self, raw: str, schema: type[T]) -> Reply:
         try:
@@ -420,7 +420,7 @@ class CLIProvider:
             AttributeError,
             ValidationError,
         ) as exc:
-            raise LLMError("CLI_SCHEMA_INVALID") from exc
+            raise LLMError("CLI_SCHEMA_INVALID", detail=schema_detail(exc)) from exc
 
     def _parse(self, raw: str, schema: type[T]) -> Reply:
         kind = (

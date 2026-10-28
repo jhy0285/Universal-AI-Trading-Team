@@ -137,27 +137,47 @@ class MarketSnapshot(StrictModel):
 
 
 class ScanOutput(StrictModel):
-    candidate_ids: list[str] = Field(max_length=10)
-    evidence: list[str]
-    explanation: str
+    candidate_ids: list[str] = Field(
+        max_length=10, description="asset_id values copied from the supplied snapshots; at most 10."
+    )
+    evidence: list[str] = Field(
+        description="evidence_id values copied from the supplied snapshots, one per candidate."
+    )
+    explanation: str = Field(description="One or two short sentences.")
 
 
 class VetOutput(StrictModel):
     verdict: Literal["PASS", "PASS_PARTIAL", "REJECT"]
     signal_priced_in: bool
     uses_world_news: bool
-    win_probability: Probability | None
-    win_payoff_ratio: Positive | None
-    expected_return_fraction: Decimal | None
-    evidence: list[str]
-    explanation: str
+    win_probability: Probability | None = Field(
+        description="Estimated chance of a winning trade as a decimal fraction from 0 to 1 "
+        "(0.6 means 60 percent; never 60). null when rejecting."
+    )
+    win_payoff_ratio: Positive | None = Field(
+        description="Average win divided by average loss, a number greater than 0. "
+        "null when rejecting."
+    )
+    expected_return_fraction: Decimal | None = Field(
+        description="Expected return of the trade as a decimal fraction (0.05 means 5 percent). "
+        "null when rejecting."
+    )
+    evidence: list[str] = Field(
+        description="The supplied evidence_id, copied exactly, when the verdict relies on it."
+    )
+    explanation: str = Field(description="One or two short sentences.")
 
 
 class BookOutput(StrictModel):
-    probability_yes: Probability | None
+    probability_yes: Probability | None = Field(
+        description="Chance the question resolves YES as a decimal fraction from 0 to 1 "
+        "(0.35 means 35 percent; never 35). null only when abstaining."
+    )
     abstain: bool
-    evidence: list[str]
-    explanation: str
+    evidence: list[str] = Field(
+        description="The supplied evidence_id, copied exactly, when not abstaining."
+    )
+    explanation: str = Field(description="One or two short sentences.")
 
     @model_validator(mode="after")
     def probability_required(self) -> BookOutput:

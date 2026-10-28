@@ -163,8 +163,10 @@ class Desk:
                     usage_basis=attempt.basis,
                 )
             )
-        if attempt.status != "CANCELLED" and self.supervisor.observe(
-            attempt.role, attempt.status == "passed", attempt.status
+        if (
+            attempt.status != "CANCELLED"
+            and attempt.final
+            and self.supervisor.observe(attempt.role, attempt.status == "passed", attempt.status)
         ):
             self.runtime.restart_requested = True
 
@@ -547,8 +549,13 @@ class Desk:
                 if isinstance(exc, (LLMError, DataError))
                 else "INPUT_OR_PROVENANCE_INVALID"
             )
+            detail = getattr(exc, "detail", "")
             self.record_agent(
-                cycle_id, "CHIEF", "blocked", {"reason": reason, "committed_orders": len(orders)}
+                cycle_id,
+                "CHIEF",
+                "blocked",
+                {"reason": reason, "committed_orders": len(orders)}
+                | ({"detail": detail} if detail else {}),
             )
             return self._finish_cycle(
                 cycle_id,
@@ -557,7 +564,8 @@ class Desk:
                     "reason": reason,
                     "orders": orders,
                     "decisions": decisions,
-                },
+                }
+                | ({"detail": detail} if detail else {}),
                 now,
             )
         except Exception:
@@ -883,8 +891,12 @@ class Desk:
                 clock(),
             )
         except (LLMError, DataError) as exc:
+            detail = getattr(exc, "detail", "")
             return self._finish_cycle(
-                cycle_id, {"status": "blocked", "reason": exc.code, "orders": []}, clock()
+                cycle_id,
+                {"status": "blocked", "reason": exc.code, "orders": []}
+                | ({"detail": detail} if detail else {}),
+                clock(),
             )
         except asyncio.CancelledError:
             self._finish_cycle(
