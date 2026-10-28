@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
-from trading_team import autonomy
+from trading_team import autonomy, learning
 from trading_team.domain import ChiefOutput, utcnow
 from trading_team.engine import Desk
 from trading_team.llm import LLMError
@@ -123,6 +123,17 @@ def build_scheduler(desk: Desk, leases: LeaseManager) -> AsyncIOScheduler:
             scheduler.modify_job("scan", next_run_time=utcnow())
         return result
 
+    async def learn():
+        # Read-mostly analysis; it proposes changes but never alters trading behaviour.
+        result = await asyncio.to_thread(learning.review, desk.db, "main")
+        return {
+            "status": "reviewed",
+            "decisions": result["report"]["funnel"]["decisions"],
+            "open_proposals": sum(x["status"] == "proposed" for x in result["proposals"]),
+            "new_proposals": result["created"],
+            "automatic_policy_changes": False,
+        }
+
     async def world_monitor():
         readiness = await desk.wm.readiness()
         desk.record_agent(
@@ -168,6 +179,15 @@ def build_scheduler(desk: Desk, leases: LeaseManager) -> AsyncIOScheduler:
             minutes=15,
             args=["book:main", lambda: autonomy.book(desk)],
             id="book",
+            **immediate,
+        )
+        scheduler.add_job(
+            invoke,
+            "interval",
+            minutes=60,
+            args=["learning:main", learn],
+            id="learning",
+            name="Measure decisions and refresh improvement proposals hourly",
             **immediate,
         )
 

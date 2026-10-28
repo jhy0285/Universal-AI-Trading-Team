@@ -282,6 +282,28 @@ class WorkerHealth(Base):
     reason: Mapped[str] = mapped_column(String(150), default="")
 
 
+class LearningReport(Base):
+    __tablename__ = "learning_reports"
+    account_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    generated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    report: Mapped[str] = mapped_column(Text)
+
+
+class ImprovementProposal(Base):
+    __tablename__ = "improvement_proposals"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(100), index=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    severity: Mapped[str] = mapped_column(String(10))
+    title: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(20), default="proposed")
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    occurrences: Mapped[int] = mapped_column(Integer, default=1)
+
+
 class ReplayRun(Base):
     __tablename__ = "replay_runs"
     id: Mapped[str] = mapped_column(String(100), primary_key=True)

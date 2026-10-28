@@ -24,6 +24,7 @@ PAGES = [
     "Model Comparison",
     "API Cost",
     "Risk Monitor",
+    "Learning Loop",
 ]
 
 
@@ -252,6 +253,80 @@ def main():
                 or {}
             )
         st.json(request("/audit" + suffix) or {})
+    elif page == "Learning Loop":
+        st.caption(
+            "결정과 결과를 측정해 개선안을 제안합니다. 전략 규칙은 자동으로 바꾸지 않으며 "
+            "사람이 검토해 적용합니다. 표본이 작으면 결론을 내리지 않습니다."
+        )
+        if st.button("지금 분석 실행", disabled=not admin or account != "main"):
+            request("/learning/run", body={"account_id": account})
+        learned = request("/learning" + suffix) or {}
+        report = learned.get("report")
+        if not report:
+            st.info("아직 분석 결과가 없습니다. worker가 매시간 실행하거나 위 버튼으로 실행합니다.")
+        else:
+            st.caption(
+                f"생성 {report['generated_at']} · 최근 {report['window_days']}일 · "
+                f"자료 유형 {report['provenance']} · 정책 {report['policy_version']}"
+            )
+            if report["provenance"] != "live":
+                st.warning("합성 자료 계정입니다. 모델이나 시장에 대한 근거가 아닙니다.")
+            st.subheader("개선 제안")
+            items = learned.get("proposals", [])
+            st.dataframe(
+                [
+                    {k: x[k] for k in ("status", "severity", "kind", "title", "action")}
+                    for x in items
+                ],
+                width="stretch",
+            )
+            open_items = [x for x in items if x["status"] == "proposed"]
+            if open_items and admin:
+                chosen = st.selectbox("검토할 제안", [x["id"] for x in open_items])
+                note = st.text_input("검토 메모", value="")
+                for column, label, status in zip(
+                    st.columns(3),
+                    ["확인함", "기각", "적용함"],
+                    ["acknowledged", "dismissed", "applied"],
+                    strict=True,
+                ):
+                    if column.button(label):
+                        st.json(
+                            request(
+                                f"/learning/proposals/{chosen}",
+                                body={"account_id": account, "status": status, "note": note},
+                            )
+                            or {}
+                        )
+            st.subheader("모델 출력 신뢰도")
+            st.dataframe(
+                [{"role": role} | item for role, item in report["reliability"].items()],
+                width="stretch",
+            )
+            st.subheader("게이트 결과 분포")
+            st.dataframe(report["funnel"]["groups"], width="stretch")
+            st.subheader("게이트 이후 24시간 가격 변화")
+            st.caption(
+                f"수수료·슬리피지 왕복 기준선 {report['round_trip_hurdle']} · 가격만 본 값이며 "
+                "체결 깊이는 반영하지 않습니다. 같은 자산이 반복되어 표본이 겹칩니다."
+            )
+            st.dataframe(
+                [
+                    {
+                        "allowed": x["allowed"],
+                        "reason": x["reason"],
+                        "decisions": x["decisions"],
+                    }
+                    | x["horizons"]["86400"]
+                    for x in report["gate_regret"]
+                ],
+                width="stretch",
+            )
+            st.subheader("확률 보정")
+            st.json(report["calibration"])
+            with st.expander("해석상 주의"):
+                for note in report["notes"]:
+                    st.write("- " + note)
 
 
 if __name__ == "__main__":
