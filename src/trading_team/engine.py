@@ -432,7 +432,7 @@ class Desk:
                         else await self.runtime.generate(
                             "VET",
                             {
-                                "task": "Evaluate the supplied candidate. Reject if required observations are missing. Forecast inputs are estimates, never observed facts.",
+                                "task": "Evaluate the supplied candidate. Reject if required observations are missing. Forecast inputs are estimates, never observed facts. If the verdict is REJECT, set win_probability, win_payoff_ratio and expected_return_fraction to null, never 0. Probabilities and fractions are decimals from 0 to 1. Copy evidence_id exactly into evidence.",
                                 "snapshot": analysis_snapshot(snapshot),
                                 "evidence_id": snapshot.digest,
                             },
@@ -765,7 +765,7 @@ class Desk:
             output = await self.runtime.generate(
                 "BOOK",
                 {
-                    "task": "Estimate P(YES) before seeing any market prices. Abstain if source evidence is insufficient.",
+                    "task": "Estimate P(YES) before seeing any market prices. Abstain if source evidence is insufficient. probability_yes is a decimal from 0 to 1 and is null only when abstaining. Copy evidence_id exactly into evidence.",
                     "question": question.model_dump(mode="json"),
                     "evidence_id": stable_hash(question),
                 },

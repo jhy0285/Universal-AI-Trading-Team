@@ -31,8 +31,8 @@ def repair_note(detail: str) -> str:
     return (
         "\n\nVALIDATION_FEEDBACK (from the application, not market data): your previous reply "
         f"failed schema validation{where}. Probabilities and fractions are decimals from 0 to 1, "
-        "never percentages; use null only where the schema allows it. "
-        "Reply again with only the corrected JSON."
+        "never percentages. A ratio must be greater than 0: write null, not 0, when a value is "
+        "unknown or you are rejecting. Reply again with only the corrected JSON."
     )
 
 

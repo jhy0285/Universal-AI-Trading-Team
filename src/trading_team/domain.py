@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
@@ -166,6 +166,21 @@ class VetOutput(StrictModel):
         description="The supplied evidence_id, copied exactly, when the verdict relies on it."
     )
     explanation: str = Field(description="One or two short sentences.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def rejection_placeholder(cls, data):
+        # A rejecting model often writes 0 for the payoff ratio instead of null. Local runtimes
+        # cannot enforce "greater than 0" while decoding, so drop that unusable placeholder for a
+        # rejection only. A PASS with a non-positive ratio stays invalid, since sizing needs it.
+        if isinstance(data, dict) and data.get("verdict") == "REJECT":
+            try:
+                unusable = Decimal(str(data["win_payoff_ratio"])) <= 0
+            except (KeyError, InvalidOperation):
+                unusable = False
+            if unusable:
+                return data | {"win_payoff_ratio": None}
+        return data
 
 
 class BookOutput(StrictModel):

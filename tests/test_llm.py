@@ -342,3 +342,45 @@ async def test_schema_repair_is_bounded_and_the_supervisor_sees_one_failure(db, 
         assert health["consecutive_failures"] == 1 and health["state"] == "degraded"
     finally:
         await desk.close()
+
+
+# Verbatim output of qwen3-4b-q4_k_m (Qwen3-4B-GGUF Q4_K_M under llama.cpp b11790) for the VET
+# request of the demo case, captured 2026-10-29. It writes 0 for the ratio instead of null.
+REAL_QWEN_VET_REJECT = """{
+  "verdict": "REJECT",
+  "signal_priced_in": false,
+  "uses_world_news": false,
+  "win_probability": 0,
+  "win_payoff_ratio": 0,
+  "expected_return_fraction": 0,
+  "evidence": [
+    "missing evidence for signal_priced_in",
+    "missing evidence for uses_world_news"
+  ],
+  "explanation": "The required observations for signal_priced_in and uses_world_news are missing from the provided evidence."
+}"""
+
+
+async def test_real_local_model_rejection_with_zero_ratio_is_accepted_as_a_rejection():
+    settings = Settings(_env_file=None, llm_provider="openai", llm_model="one", llm_api_key="fake")
+    body = {"choices": [{"message": {"content": REAL_QWEN_VET_REJECT}, "finish_reason": "stop"}]}
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body))
+    ) as client:
+        reply = await HTTPProvider(settings, client).generate([], VetOutput)
+    assert reply.payload.verdict == "REJECT" and reply.payload.win_payoff_ratio is None
+
+
+@pytest.mark.parametrize("ratio", [0, "0", -1, "-0.5"])
+def test_only_a_rejection_may_replace_a_non_positive_ratio(ratio):
+    base = VET_REJECT | {"win_probability": "0.6", "expected_return_fraction": "0.1"}
+    assert VetOutput.model_validate(base | {"win_payoff_ratio": ratio}).win_payoff_ratio is None
+    for verdict in ("PASS", "PASS_PARTIAL"):
+        # Sizing divides by this ratio, so a pass with an unusable one must fail closed.
+        with pytest.raises(ValueError, match="win_payoff_ratio"):
+            VetOutput.model_validate(base | {"verdict": verdict, "win_payoff_ratio": ratio})
+
+
+def test_a_positive_ratio_and_null_are_untouched_for_a_rejection():
+    assert VetOutput.model_validate(VET_REJECT | {"win_payoff_ratio": "2"}).win_payoff_ratio == 2
+    assert VetOutput.model_validate(VET_REJECT).win_payoff_ratio is None
