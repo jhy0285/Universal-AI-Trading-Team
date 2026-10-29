@@ -20,16 +20,21 @@
 | 수량 정밀도 | 1e-9 단위 내림, 금액은 Decimal. 거래소별 실제 lot/tick 제약을 구현했다고 주장하지 않음 |
 | 수수료 바닥 | 신규 진입에서 유효 비용이 2%를 넘거나 실제 체결 명목 금액이 50 미만이면 FEE_FLOOR. 20달러 예시는 최소 진입 단계에서 먼저 거절 |
 | 일중 10% 알림 | 서울 날짜의 **첫 유효 평가 자산**을 기준으로 절대 변화가 10%를 초과하면 하루 한 번 내부 감사/대시보드에 기록. 외부 메시지를 보내지 않음 |
-| 응답 감독 | 역할별 연속 2회 실패에 동일 설정의 stateless client 재생성 요청. 1시간 내 두 번째 재생성 조건이면 신규 진입 정지. 강제 청산하지 않음 |
+| 응답 감독 | 역할별 연속 2회 실패에 동일 설정의 stateless client 재생성 요청. 1시간 내 두 번째 재생성 조건이면 신규 진입 정지. 강제 청산하지 않음. fixture·recorded 장부의 모델 재생 실패는 집계하지 않음 |
+| VET 사전 검사 | 모델 판단 항목을 통과로 둔 채 `vet_gate`를 같은 순서로 실행해, 자료만으로 정해지는 거절을 SCAN·VET 모델 호출 전에 기록. 모델 뒤의 전체 `vet_gate`는 실제 금액으로 다시 실행 |
+| VET 모델 오류 | 한 후보의 모델 오류는 `VET_MODEL_<코드>`로 그 후보만 거절. 전역 설정 변경 오류는 사이클 전체를 중단 |
+| 체결 직전 재견적 | 무료 관측 pool은 VET 통과 후 Jupiter 깊이를 다시 조회. 분석 시점 가격보다 2%를 넘게 움직이면 `PRICE_MOVED_SINCE_ANALYSIS`. 다른 관측값은 분석 시점 그대로 |
+| 평가 유효 시간 | 열린 포지션 평가는 600초(RISK 두 주기)까지 유효. 그보다 오래되면 equity를 N/A로 두고 신규 진입을 막음 |
 
 ## 시간과 자료
 
 - 시간은 timezone-aware UTC로 저장합니다. 스케줄은 SCAN 15분, RISK 5분, CHIEF 23:00 Asia/Seoul입니다.
 - 수집 시각 `fetched_at`과 공급자 관측 시각 `observed_at`을 구별합니다. 기본 시장 300초·실행 호가 60초 이내를 검사합니다.
-- DexScreener 응답의 원천 관측 시각, 보유자 이력, whale 매도 상태, 실제 실행 깊이는 알려지지 않습니다. 이 필드는 null로 남고 자동 진입을 막습니다.
-- Solana largest accounts / supply는 **최대 토큰 계정 비율**입니다. 실소유 지갑 집중도로 이름을 바꾸지 않습니다.
-- legacy SPL mint/freeze authority 검사는 제한된 계약 점검입니다. 포괄적인 스마트 계약 감사가 아닙니다. 전체 보유자 스캔은 기본 비활성입니다.
-- 온체인 Adapter와 공개 호가 Adapter는 구현했지만, 보유자·두 구간·whale 매도의 신뢰할 수 있는 연속 자료를 채우는 외부 indexer는 구성되지 않았습니다.
+- DexScreener 응답에는 원천 관측 시각, 보유자 이력, whale 매도 상태, 실제 실행 깊이가 없습니다.
+  이 필드는 [무료 시장 관측](market-observer.md)이 Jupiter 견적·Solana RPC·GeckoTerminal 거래·자체 이력으로 채우며, 실패한 필드는 null로 남아 진입을 막습니다.
+- 집중도는 유동성 풀을 제외하고 같은 소유자의 token account를 합산한 **최대 보유자 / 총 공급량**입니다. 필드 이름은 호환을 위해 유지합니다.
+- mint/freeze authority와 Token-2022 확장 허용 목록 검사는 제한된 계약 점검입니다. 포괄적인 스마트 계약 감사가 아닙니다.
+- 보유자 조회는 token account 3만 개·응답 10MB 이하에서만 수행합니다. 큰 토큰의 보유자는 unknown입니다.
 - 기존 가격이나 중간가를 체결 증거로 사용하지 않습니다. 가격 없는 RISK는 `close_requested_unpriced`로 남으며 현금이나 수량을 바꾸지 않습니다.
 - RISK의 `20*h6 < h24`는 `h6/(h24/4) < 0.20`과 동일한 Decimal 비교입니다. +50% 시총은 HOLD, +60%는 flag이며 자동 익절이 아닙니다.
 
@@ -49,6 +54,12 @@
 사용자 선택에 따라 전역 Provider를 loopback-only `llama_cpp`로 설정했습니다. 가중치 URL·SHA-256과 모델 ID는 환경변수에서 선택합니다.
 고정 CPU runtime·검증된 GGUF 하나를 사용하고, 도구·MCP·agent 모드는 비활성화합니다. 네 역할의 실제 로컬 schema probe를 통과했습니다.
 로컬 토큰은 `local_inference_usage`로 보존하며 외부 API 요금으로 환산하지 않습니다.
+SCAN의 후보·근거와 VET·BOOK의 근거는 호출마다 제공한 ID만 허용하는 enum schema로 요청합니다. 문법 제약 모델은 문장을 쓸 수 없고 다른 Provider는 검증에서 거절됩니다.
+모델에는 44자 mint와 64자 해시 대신 짧은 핸들(A1·E1…)을 보여 주고, Python이 원래 ID로 되돌려 검증·기록합니다. 긴 ID 하나가 수십 토큰의 생성 비용이기 때문입니다.
+SCAN은 같은 후보를 한 번만 평가하고, 근거 ID를 인용하지 않은 후보는 `SCAN_EVIDENCE_NOT_CITED`로 거절합니다.
+SCAN·VET 입력에는 Python이 계산한 보유자·가격 증가율과 구간별 매수·매도 수를 함께 제공합니다.
+모델 출력 schema의 Decimal 필드는 JSON number만 허용합니다. 제약 없는 문자열 분기는 constrained decoder가 수치 범위를 우회하게 합니다.
+llama.cpp grammar는 number의 범위를 강제하지 않으므로 VET 손익비는 0 이상을 받고, 0은 추정 없음으로 보아 SIZE가 0을 계산합니다.
 
 단일 HTTP Adapter 구현은 네이티브 Provider의 JSON schema API를 사용합니다. SDK/LiteLLM 대신 httpx를 채택해 의존성을 줄였습니다.
 각 Provider 계약은 HTTP mock으로 검사했으며 **유료 실제 모델의 호환성을 검증한 것은 아닙니다**.

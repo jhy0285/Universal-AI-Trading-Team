@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -53,6 +54,10 @@ class Settings(BaseSettings):
         return init_settings, env_settings, checked_dotenv, file_secret_settings
 
     trading_mode: Literal["paper"] = "paper"
+    # Virtual USD for a newly created main ledger. An existing ledger keeps its own history.
+    paper_initial_cash: Decimal = Field(
+        default=Decimal("1000"), gt=0, le=100_000_000, allow_inf_nan=False
+    )
     llm_provider: ProviderName = "codex_cli"
     llm_model: str = Field(default="", max_length=150)
     llm_api_key: SecretStr = SecretStr("")
@@ -92,9 +97,23 @@ class Settings(BaseSettings):
     worldmonitor_redis_token: SecretStr = SecretStr("")
     worldmonitor_seed_enabled: bool = False
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
+    # Original strategy: candidates come from DexScreener launch data only.
+    dex_discovery: Literal["launches", "search", "both"] = "launches"
     dex_queries: str = "BONK"
     market_data_feed_url: str = ""
     market_data_feed_api_key: SecretStr = SecretStr("")
+    # Free Jupiter/Solana RPC/GeckoTerminal observations for the most liquid Dex pools.
+    market_observer_enabled: bool = True
+    market_observer_max_assets: int = Field(default=3, ge=1, le=10)
+    # Optional free key from Jupiter's portal: 60 instead of 30 requests/minute.
+    jupiter_api_key: SecretStr = SecretStr("")
+    # Optional messages for fills, halts, the intraday 10% alert and daily reports.
+    # A Discord or Slack incoming-webhook URL, and/or a Telegram bot token with a chat ID.
+    notify_webhook_url: SecretStr = SecretStr("")
+    notify_telegram_bot_token: SecretStr = SecretStr("")
+    notify_telegram_chat_id: str = Field(default="", pattern=r"^(-?\d{1,20}|@[A-Za-z0-9_]{5,32})?$")
+    # Unreferenced live observation evidence older than this is pruned daily; 0 keeps everything.
+    snapshot_retention_days: int = Field(default=14, ge=0, le=3650)
     state_dir: Path = Path(".state")
     quote_max_age_seconds: int = Field(default=60, ge=1, le=300)
     market_max_age_seconds: int = Field(default=300, ge=1, le=900)
@@ -115,6 +134,16 @@ class Settings(BaseSettings):
             "goose": "goose_cli",
             "custom": "custom_cli",
         }.get(value, value)
+
+    @field_validator("notify_webhook_url")
+    @classmethod
+    def https_webhook(cls, value: SecretStr) -> SecretStr:
+        url = value.get_secret_value()
+        if url:
+            parts = urlsplit(url)
+            if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+                raise ValueError("notification webhook must be an HTTPS URL without credentials")
+        return value
 
     @field_validator("llm_model")
     @classmethod
@@ -232,6 +261,10 @@ class Settings(BaseSettings):
             if self.llm_provider == "llama_cpp"
             else "",
             "market_data_feed_url": self.market_data_feed_url,
+            "market_observer": {
+                "enabled": self.market_observer_enabled,
+                "max_assets": self.market_observer_max_assets,
+            },
             "worldmonitor_base_url": self.worldmonitor_base_url,
             "local_context_size": self.local_llm_context_size
             if self.llm_provider == "llama_cpp"
@@ -293,4 +326,5 @@ class Settings(BaseSettings):
             "cli": self.llm_provider in CLI_PROVIDER_NAMES,
             "autonomous_enabled": self.autonomous_enabled,
             "funds": "paper_money_only",
+            "paper_initial_cash": str(self.paper_initial_cash),
         }

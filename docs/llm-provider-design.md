@@ -109,6 +109,7 @@ SDK 버전·잠금 파일·취약점 검토는 Phase 2 구현 전에 확정합�
 | Timeout / retry / usage | 오류·비용·사용량을 정규화; 여러 SDK의 중첩 재시도를 제한 |
 
 필수 기능이 `unknown`이면 활성화를 막습니다. 공급자 단위의 정적 Yes/No 표로 모든 모델을 승인하지 않습니다.
+식별자 필드(SCAN 후보·근거, VET·BOOK 근거)는 호출마다 허용 ID를 enum으로 좁힌 schema를 보냅니다. llama.cpp 같은 문법 제약 디코더는 다른 값을 출력할 수 없습니다.
 텍스트 JSON 대체 경로는 실제 모델·해당 스키마 검증에 성공한 경우에만 등록합니다. JSON 수선이나 반복 프롬프트로 거래 승인을 얻지 않습니다.
 
 ## 6. 연결 검증·설정 변경·실패
@@ -143,3 +144,13 @@ SDK 버전·잠금 파일·취약점 검토는 Phase 2 구현 전에 확정합�
 - [Ollama API](https://github.com/ollama/ollama/blob/main/docs/api.md)
 
 각 자료의 실제 HTTP 결과와 내용 해시는 [검증 보고서](validation-report.md)에 기록합니다. 기능 설명은 모델별 실제 연결 테스트의 대체물이 아닙니다.
+
+## 9. 로컬 문법 디코딩의 한계
+
+`llama_cpp`는 JSON 스키마를 디코딩 문법으로 바꾸며 **스키마 텍스트를 모델에게 보여 주지 않습니다.** 따라서
+
+- `Field(description=...)`는 llama.cpp 모델에는 효과가 없습니다. OpenAI·Anthropic·Google 등 스키마를 모델에 전달하는 Provider에서만 도움이 됩니다.
+- `gt=0` 같은 수치 하한은 문법이 강제하지 못합니다. 모델이 쓸 법한 값은 Pydantic이 사후에 검증합니다.
+- 필드 규칙은 역할의 task 문장에 직접 씁니다(거절 시 `null`, 확률은 0~1 소수, 증거는 라벨 없는 `evidence_id` 그대로).
+- 거절 verdict에서만 쓸모없는 `win_payoff_ratio <= 0`을 `null`로 바꿉니다. PASS는 Kelly가 비양수 배당을 거부하므로 실패로 둡니다.
+- 증거 ID는 앱이 계산한 해시와 **정확히 일치**해야 합니다. 라벨 접두사나 지어낸 후보를 보정하지 않고 차단합니다.

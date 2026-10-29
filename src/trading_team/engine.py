@@ -26,12 +26,23 @@ from trading_team.domain import (
     PredictionQuestion,
     ScanOutput,
     VetOutput,
+    cited,
     stable_hash,
     utcnow,
 )
 from trading_team.llm import Attempt, LLMError, LLMRuntime
+from trading_team.notify import Notifier, fill_text
+from trading_team.observer import MarketObserver
 from trading_team.operations import Supervisor, intraday_check
-from trading_team.policy import POLICY_VERSION, book_gate, risk_decision, scan_gate, size_quote
+from trading_team.policy import (
+    POLICY_VERSION,
+    SLIPPAGE_CAP,
+    book_gate,
+    risk_decision,
+    scan_gate,
+    size_quote,
+    vet_precheck,
+)
 from trading_team.policy import vet_gate as deterministic_vet
 from trading_team.settings import Settings
 from trading_team.storage import (
@@ -53,36 +64,73 @@ from trading_team.storage import (
 D = Decimal
 
 
+SCAN_TASK = (
+    "Rank at most 10 candidate_id values by derived.holder_growth_fraction, computed by Python. "
+    "A candidate whose price grows faster than its holders must not rank above one whose holders "
+    "grow faster. Cite each chosen candidate's evidence_id in evidence. No orders or sizes."
+)
+VET_TASK = (
+    "Python has already verified this candidate's required observations; do not reject for "
+    "missing data. Judge only what needs judgement: signal_priced_in (is the holder growth "
+    "already reflected in price_change_h1_percent and derived.price_growth_fraction?), "
+    "uses_world_news, and forecasts for a short holding period: win_probability, "
+    "win_payoff_ratio (average win / average loss) and expected_return_fraction. Paper fees are "
+    "max(0.45%, $0.95) per fill, paid on entry and exit. Forecasts are estimates, never observed "
+    "facts; use null when you cannot estimate. Cite evidence_id in evidence."
+)
+
+
+def growth(current, before) -> str | None:
+    if current is None or before is None or before <= 0:
+        return None
+    return str(((D(current) - D(before)) / D(before)).quantize(D("0.0001")))
+
+
+def derived(snapshot: MarketSnapshot) -> dict:
+    """Comparisons computed in Python, so the model ranks numbers instead of deriving them."""
+    holders = growth(snapshot.holder_count, snapshot.previous_holder_count)
+    price = growth(snapshot.price, snapshot.previous_price)
+    current, before = snapshot.holder_observed_at, snapshot.previous_holder_observed_at
+    return {
+        "holder_growth_fraction": holders,
+        "price_growth_fraction": price,
+        "minutes_between_holder_observations": round((current - before).total_seconds() / 60, 1)
+        if current and before
+        else None,
+        "holders_outpace_price": None
+        if holders is None or price is None
+        else D(holders) > D(price),
+        "window_buys_sells": [[w.buys, w.sells] for w in snapshot.windows],
+    }
+
+
 def analysis_snapshot(snapshot: MarketSnapshot, *, scan: bool = False) -> dict:
     # The full immutable snapshot remains the deterministic execution evidence.
     # Model roles receive relevant observations without thousands of executable depth levels.
     if scan:
+        # Ranking needs growth, not raw timestamps or windows: derived carries those compactly,
+        # which keeps the prompt short enough for CPU models.
         fields = {
-            "asset_id",
             "symbol",
-            "chain",
-            "pair_id",
-            "source",
-            "observed_at",
             "price",
             "previous_price",
             "liquidity_usd",
             "holder_count",
             "previous_holder_count",
-            "holder_observed_at",
-            "previous_holder_observed_at",
             "price_change_h1_percent",
-            "windows",
         }
-        return snapshot.model_dump(mode="json", include=fields)
+        return snapshot.model_dump(mode="json", include=fields) | {"derived": derived(snapshot)}
     data = snapshot.model_dump(mode="json", exclude={"buy_quote", "sell_quote"})
+    data["derived"] = derived(snapshot)
+    # Entry depth only: exit depth is quoted by RISK for the held quantity, and an absent
+    # sell side read as "missing data" to the model.
+    quote = snapshot.buy_quote
     data["execution_observations"] = {
-        side: {
+        "buy": {
             "present": quote is not None,
             "observed_at": quote.observed_at.isoformat() if quote else None,
             "source": quote.source if quote else None,
         }
-        for side, quote in (("buy", snapshot.buy_quote), ("sell", snapshot.sell_quote))
     }
     return data
 
@@ -108,8 +156,19 @@ class Desk:
         self.wm = WorldMonitor(settings, self.data)
         self.prediction = PredictionMarkets(self.data)
         self.solana = SolanaOnchain(settings, self.data)
+        self.observer = MarketObserver(settings, db, self.data, self.dex, self.solana)
+        self.notifier = Notifier(settings)
+        self.supervisor.on_halt = lambda role, reason: self.notifier.send(
+            f"데스크 신규 진입 중단: {role} 반복 실패 ({reason}). 해제는 Kill Switch 해제로만 가능"
+        )
+
+    def notify_fill(self, order: dict):
+        text = fill_text(order)
+        if text:
+            self.notifier.send(text)
 
     async def close(self):
+        await self.notifier.drain()
         await self.runtime.close()
         await self.data.close()
 
@@ -163,8 +222,14 @@ class Desk:
                     usage_basis=attempt.basis,
                 )
             )
-        if attempt.status != "CANCELLED" and self.supervisor.observe(
-            attempt.role, attempt.status == "passed", attempt.status
+            cycle = s.get(Cycle, attempt.cycle_id)
+            # Model replays on fixture or recorded ledgers must not halt the live desk.
+            live = cycle is None or cycle.provenance == "live"
+        if (
+            live
+            and attempt.status != "CANCELLED"
+            and attempt.final
+            and self.supervisor.observe(attempt.role, attempt.status == "passed", attempt.status)
         ):
             self.runtime.restart_requested = True
 
@@ -215,22 +280,38 @@ class Desk:
                 value.update(verified=False, reason="MODEL_PROBE_EXPIRED")
             return value
 
-    async def collect(self) -> dict:
+    async def collect(self, *, trades: bool = True) -> dict:
+        """Discover pools and observe the most liquid ones.
+
+        Trade windows are needed only when SCAN evaluates; the minute collection skips them to
+        spare GeckoTerminal's shared keyless limit.
+        """
         results = []
         errors = []
-        queries = [q.strip() for q in self.settings.dex_queries.split(",") if q.strip()][:5]
-        for query in queries:
+        discovered = {}
+        if self.settings.dex_discovery in {"launches", "both"}:
             try:
-                discovered = await self.dex.search(query)
-                try:
-                    discovered = await self.market_feed.enrich(discovered)
-                except DataError as exc:
-                    errors.append({"source": "market_data_feed", "reason": exc.code})
-                for snapshot in discovered:
-                    self.broker.save_snapshot(snapshot)
-                    results.append(snapshot)
+                for snapshot in await self.dex.launches():
+                    discovered.setdefault((snapshot.asset_id, snapshot.pair_id), snapshot)
             except DataError as exc:
-                errors.append({"query": query, "reason": exc.code})
+                errors.append({"source": "dexscreener_launches", "reason": exc.code})
+        if self.settings.dex_discovery in {"search", "both"}:
+            queries = [q.strip() for q in self.settings.dex_queries.split(",") if q.strip()][:5]
+            for query in queries:
+                try:
+                    for snapshot in await self.dex.search(query):
+                        discovered.setdefault((snapshot.asset_id, snapshot.pair_id), snapshot)
+                except DataError as exc:
+                    errors.append({"query": query, "reason": exc.code})
+        observed, notes = await self.observer.observe(list(discovered.values()), trades=trades)
+        errors.extend(notes)
+        try:
+            observed = await self.market_feed.enrich(observed)
+        except DataError as exc:
+            errors.append({"source": "market_data_feed", "reason": exc.code})
+        for snapshot in observed:
+            self.broker.save_snapshot(snapshot)
+            results.append(snapshot)
         return {
             "snapshots": [x.model_dump(mode="json") | {"snapshot_id": x.digest} for x in results],
             "errors": errors,
@@ -329,6 +410,32 @@ class Desk:
                 },
             )
 
+    def _record_decision(
+        self, cycle_id: str, account_id: str, snapshot: MarketSnapshot, gate, decisions: list
+    ):
+        self._decision(cycle_id, account_id, snapshot, gate)
+        decisions.append(
+            {"asset_id": snapshot.asset_id, "allowed": gate.allowed, "reason": gate.reason}
+        )
+
+    async def _requote(self, snapshot: MarketSnapshot) -> tuple[MarketSnapshot, GateResult]:
+        """Fresh executable depth right before FILLS; model time must not age the quote."""
+        try:
+            execution = await self.observer.requote(snapshot)
+        except (DataError, ValueError) as exc:
+            reason = exc.code if isinstance(exc, DataError) else "OBSERVATION_INVALID"
+            return snapshot, GateResult(
+                allowed=False, reason="EXECUTION_REQUOTE_FAILED", details={"reason": reason}
+            )
+        moved = abs(execution.price - snapshot.price) / snapshot.price
+        if moved > SLIPPAGE_CAP:
+            return snapshot, GateResult(
+                allowed=False, reason="PRICE_MOVED_SINCE_ANALYSIS", details={"moved": str(moved)}
+            )
+        return execution, GateResult(
+            allowed=True, reason="VET_PASS", details={"requoted_snapshot": execution.digest}
+        )
+
     async def run_cycle(
         self,
         account_id: str,
@@ -379,12 +486,13 @@ class Desk:
             for snapshot in snapshots:
                 gate = scan_gate(snapshot, clock(), self.settings.market_max_age_seconds)
                 if gate.allowed:
+                    # VET's model-free checks first: cheapest first, no model time on candidates
+                    # that the observations already reject.
+                    gate = vet_precheck(snapshot, clock())
+                if gate.allowed:
                     eligible.append(snapshot)
                 else:
-                    self._decision(cycle_id, account_id, snapshot, gate)
-                    decisions.append(
-                        {"asset_id": snapshot.asset_id, "allowed": False, "reason": gate.reason}
-                    )
+                    self._record_decision(cycle_id, account_id, snapshot, gate, decisions)
             # One originating pool per asset; no cross-pool data splicing.
             best = {}
             for snapshot in eligible:
@@ -395,26 +503,40 @@ class Desk:
                     best[snapshot.asset_id] = snapshot
             eligible = list(best.values())[:30]
             if eligible:
-                scan = recorded_scan or await self.runtime.generate(
-                    "SCAN",
-                    {
-                        "task": "Rank at most 10 candidates by evidence-based holder growth; no orders.",
-                        "snapshots": [
-                            analysis_snapshot(x, scan=True) | {"evidence_id": x.digest}
-                            for x in eligible
+                if recorded_scan is not None:
+                    scan = recorded_scan
+                else:
+                    # Short handles stand in for 44-character mints and 64-character hashes:
+                    # each long ID costs dozens of generated tokens on a CPU model.
+                    ranked = await self.runtime.generate(
+                        "SCAN",
+                        {
+                            "task": SCAN_TASK,
+                            "snapshots": [
+                                analysis_snapshot(x, scan=True)
+                                | {"candidate_id": f"A{i}", "evidence_id": f"E{i}"}
+                                for i, x in enumerate(eligible, 1)
+                            ],
+                        },
+                        cited(
+                            ScanOutput,
+                            candidate_ids=[f"A{i}" for i in range(1, len(eligible) + 1)],
+                            evidence=[f"E{i}" for i in range(1, len(eligible) + 1)],
+                        ),
+                        cycle_id,
+                    )
+                    scan = ScanOutput(
+                        candidate_ids=[
+                            eligible[int(x[1:]) - 1].asset_id for x in ranked.candidate_ids
                         ],
-                    },
-                    ScanOutput,
-                    cycle_id,
-                )
+                        evidence=[eligible[int(x[1:]) - 1].digest for x in ranked.evidence],
+                        explanation=ranked.explanation,
+                    )
                 known = {x.asset_id: x for x in eligible}
-                if (
-                    len(scan.candidate_ids) != len(set(scan.candidate_ids))
-                    or not set(scan.candidate_ids) <= set(known)
-                    or not set(scan.evidence) <= {x.digest for x in eligible}
-                    or not {known[x].digest for x in scan.candidate_ids} <= set(scan.evidence)
-                ):
-                    raise LLMError("SCAN_UNKNOWN_OR_DUPLICATE_EVIDENCE")
+                if not set(scan.candidate_ids) <= {x.asset_id for x in snapshots} or not set(
+                    scan.evidence
+                ) <= {x.digest for x in snapshots}:
+                    raise LLMError("SCAN_UNKNOWN_EVIDENCE")
                 self.record_agent(
                     cycle_id,
                     "SCAN",
@@ -422,24 +544,49 @@ class Desk:
                     scan.model_dump(mode="json"),
                     recorded=recorded,
                 )
-                for asset_id in scan.candidate_ids:
-                    snapshot = known[asset_id]
-                    analysis = (
-                        (recorded_vet or {}).get(asset_id)
-                        if recorded
-                        else await self.runtime.generate(
-                            "VET",
-                            {
-                                "task": "Evaluate the supplied candidate. Reject if required observations are missing. Forecast inputs are estimates, never observed facts.",
-                                "snapshot": analysis_snapshot(snapshot),
-                                "evidence_id": snapshot.digest,
-                            },
-                            VetOutput,
-                            cycle_id,
-                        )
-                    )
-                    if analysis is None:
-                        raise LLMError("RECORDED_VET_MISSING")
+                for asset_id in dict.fromkeys(scan.candidate_ids):
+                    snapshot = known.get(asset_id)
+                    if snapshot is None:
+                        continue  # Rejected before ranking; that decision is already recorded.
+                    if snapshot.digest not in scan.evidence:
+                        gate = GateResult(allowed=False, reason="SCAN_EVIDENCE_NOT_CITED")
+                        self._record_decision(cycle_id, account_id, snapshot, gate, decisions)
+                        continue
+                    if recorded:
+                        analysis = (recorded_vet or {}).get(asset_id)
+                        if analysis is None:
+                            raise LLMError("RECORDED_VET_MISSING")
+                    else:
+                        try:
+                            answer = await self.runtime.generate(
+                                "VET",
+                                {
+                                    "task": VET_TASK,
+                                    "data_checks": "passed: Python verified every required "
+                                    "observation, freshness and on-chain fact before this call",
+                                    "snapshot": analysis_snapshot(snapshot),
+                                    "evidence_id": "E1",
+                                },
+                                cited(VetOutput, required="evidence", evidence=["E1"]),
+                                cycle_id,
+                            )
+                            analysis = VetOutput.model_validate(
+                                answer.model_dump() | {"evidence": [snapshot.digest]}
+                            )
+                        except LLMError as exc:
+                            if exc.code.startswith("GLOBAL_CONFIGURATION_CHANGED"):
+                                raise
+                            # One candidate's model failure rejects that candidate only.
+                            self.record_agent(
+                                cycle_id,
+                                "VET",
+                                "failed",
+                                {"reason": exc.code}
+                                | ({"detail": exc.detail} if exc.detail else {}),
+                            )
+                            gate = GateResult(allowed=False, reason="VET_MODEL_" + exc.code)
+                            self._record_decision(cycle_id, account_id, snapshot, gate, decisions)
+                            continue
                     self.record_agent(
                         cycle_id,
                         "VET",
@@ -454,6 +601,7 @@ class Desk:
                             equity is None
                             or analysis.win_probability is None
                             or analysis.win_payoff_ratio is None
+                            or analysis.win_payoff_ratio <= 0
                             or snapshot.liquidity_usd is None
                         ):
                             amount = D("0")
@@ -474,10 +622,10 @@ class Desk:
                     gate = deterministic_vet(snapshot, analysis, amount, clock())
                     if gate.allowed and amount <= 0:
                         gate = GateResult(allowed=False, reason="SIZE_ZERO")
-                    self._decision(cycle_id, account_id, snapshot, gate)
-                    decisions.append(
-                        {"asset_id": asset_id, "allowed": gate.allowed, "reason": gate.reason}
-                    )
+                    execution = snapshot
+                    if gate.allowed and not recorded and self.observer.can_requote(snapshot):
+                        execution, gate = await self._requote(snapshot)
+                    self._record_decision(cycle_id, account_id, snapshot, gate, decisions)
                     if gate.allowed:
                         order = self.broker.execute(
                             order_id=stable_hash(
@@ -485,14 +633,15 @@ class Desk:
                             ),
                             cycle_id=cycle_id,
                             account_id=account_id,
-                            snapshot=snapshot,
-                            quote=snapshot.buy_quote,
+                            snapshot=execution,
+                            quote=execution.buy_quote,
                             side="buy",
                             requested=amount,
                             now=clock(),
                         )
                         orders.append(order)
                         self.record_agent(cycle_id, "FILLS", order["status"], order)
+                        self.notify_fill(order)
             else:
                 self.record_agent(
                     cycle_id,
@@ -547,8 +696,13 @@ class Desk:
                 if isinstance(exc, (LLMError, DataError))
                 else "INPUT_OR_PROVENANCE_INVALID"
             )
+            detail = getattr(exc, "detail", "")
             self.record_agent(
-                cycle_id, "CHIEF", "blocked", {"reason": reason, "committed_orders": len(orders)}
+                cycle_id,
+                "CHIEF",
+                "blocked",
+                {"reason": reason, "committed_orders": len(orders)}
+                | ({"detail": detail} if detail else {}),
             )
             return self._finish_cycle(
                 cycle_id,
@@ -557,7 +711,8 @@ class Desk:
                     "reason": reason,
                     "orders": orders,
                     "decisions": decisions,
-                },
+                }
+                | ({"detail": detail} if detail else {}),
                 now,
             )
         except Exception:
@@ -606,6 +761,8 @@ class Desk:
                     snapshot, resolution = await self.prediction.risk_observation(asset_id)
                     if resolution is not None:
                         order = self.broker.settle_prediction(account_id, resolution, clock())
+                        if order:
+                            self.notify_fill(order)
                         result = {
                             "asset_id": asset_id,
                             "decision": "VERIFIED_BINARY_RESOLUTION",
@@ -627,7 +784,6 @@ class Desk:
                     try:
                         chain, mint = asset_id.split(":", 1)
                         values = await self.dex.token(chain, mint)
-                        values = await self.market_feed.enrich(values)
                         # Use the same originating pool when available; never silently switch pools.
                         previous = next(
                             (x for x in self.latest_snapshots() if x.asset_id == asset_id), None
@@ -635,6 +791,12 @@ class Desk:
                         snapshot = next(
                             (x for x in values if previous and x.pair_id == previous.pair_id), None
                         )
+                        if snapshot is not None and self.settings.market_observer_enabled:
+                            snapshot = await self.observer.observe_exit(
+                                snapshot, D(position["quantity"])
+                            )
+                        if snapshot is not None:
+                            snapshot = (await self.market_feed.enrich([snapshot]))[0]
                         if snapshot is not None and snapshot.fresh(clock()):
                             break
                     except (DataError, ValueError):
@@ -678,6 +840,7 @@ class Desk:
                     now=clock(),
                     market_kind=position["market_kind"],
                 )
+                self.notify_fill(order)
             cap = snapshot.market_cap if snapshot is not None and snapshot.fresh(clock()) else None
             initial_cap = (
                 D(position["initial_market_cap"])
@@ -701,11 +864,15 @@ class Desk:
             }
             self.record_agent("risk", "RISK", "close_requested" if close else "hold", result)
             outcomes.append(result)
+        intraday = intraday_check(self.db, account_id, clock())
+        if intraday.get("notified"):
+            change = D(intraday["change_fraction"]) * 100
+            self.notifier.send(f"장중 평가 자산 {change:+.1f}% 변동 (서울 날짜 첫 평가 대비)")
         return {
             "paper_only": True,
             "positions_checked": len(positions),
             "results": outcomes,
-            "intraday": intraday_check(self.db, account_id, clock()),
+            "intraday": intraday,
         }
 
     async def run_book(
@@ -754,15 +921,19 @@ class Desk:
                     {"status": "blocked", "reason": "BOOK_EVIDENCE_CONTENT_REQUIRED", "orders": []},
                     clock(),
                 )
-            output = await self.runtime.generate(
+            answer = await self.runtime.generate(
                 "BOOK",
                 {
-                    "task": "Estimate P(YES) before seeing any market prices. Abstain if source evidence is insufficient.",
+                    "task": "Estimate P(YES) before seeing any market prices. Abstain if source evidence is insufficient. Cite evidence_id in evidence.",
                     "question": question.model_dump(mode="json"),
-                    "evidence_id": stable_hash(question),
+                    "evidence_id": "E1",
                 },
-                BookOutput,
+                cited(BookOutput, required="evidence", evidence=["E1"]),
                 cycle_id,
+            )
+            # The handle stands for the question's hash; the record keeps the hash itself.
+            output = BookOutput.model_validate(
+                answer.model_dump() | {"evidence": [stable_hash(question)]}
             )
             self.record_agent(cycle_id, "BOOK", "passed", output.model_dump(mode="json"))
             if output.abstain or stable_hash(question) not in output.evidence:
@@ -872,6 +1043,7 @@ class Desk:
                     market_kind="prediction",
                 )
                 orders.append(order)
+                self.notify_fill(order)
                 break  # One outcome/venue for this question, not simultaneous contradictory bets.
             return self._finish_cycle(
                 cycle_id,
@@ -883,8 +1055,12 @@ class Desk:
                 clock(),
             )
         except (LLMError, DataError) as exc:
+            detail = getattr(exc, "detail", "")
             return self._finish_cycle(
-                cycle_id, {"status": "blocked", "reason": exc.code, "orders": []}, clock()
+                cycle_id,
+                {"status": "blocked", "reason": exc.code, "orders": []}
+                | ({"detail": detail} if detail else {}),
+                clock(),
             )
         except asyncio.CancelledError:
             self._finish_cycle(

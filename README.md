@@ -4,11 +4,15 @@
 
 ## 현재 상태
 
+> 이어서 작업한다면 먼저 [인수인계](docs/handoff.md)를 읽으세요. 상태, 다음 할 일, 환경 함정, 바꾸면 안 되는 결정이 있습니다.
+
 **로컬 CPU LLM과 자동 페이퍼 수집·감시를 실행합니다.** 네 AI 역할의 간단한 실제 추론·출력 스키마 점검은 통과했습니다.
-다만 실제 모델을 연결한 합성 재생에서 VET 응답이 `LLM_SCHEMA_INVALID`로 차단되어 일반 분석 호환 검증은 미완료입니다.
+실제 모델을 연결한 합성 재생에서 VET가 `LLM_SCHEMA_INVALID`로 차단되던 문제는 원인(REJECT 시 손익비 0 출력)을 수정했습니다.
+이제 사이클이 정상 완료되며, 해당 모델은 합성 후보를 REJECT해 주문은 없습니다. PASS 경로의 실제 모델 호환은 미검증입니다.
 전역 `LLM_PROVIDER=llama_cpp`와 환경변수의 모델 ID를 사용하며 API 키가 필요 없습니다.
 로컬 World Monitor의 실제 Redis/seed도 구성했고 fear/greed·prediction 데이터를 수집했습니다. 교차 신호가 없어 BOOK은 대기합니다.
-원본 밈코인 전략은 보유자 이력·whale·체결 깊이·원천 시각 자료가 부족해 신규 진입을 차단합니다.
+DexScreener에 없는 원천 시각·보유자 이력·큰 지갑 매도·실행 깊이는 무료 공개 API로 채웁니다([무료 시장 관측](docs/market-observer.md)).
+이 자료가 하나라도 없거나 오래되면 해당 진입은 계속 차단합니다. 후보는 기본적으로 DexScreener 신규 상장 피드에서 찾습니다(`DEX_DISCOVERY`).
 자동 수집이 실행 중이라는 사실은 체결 조건이 충족됐다는 의미가 아닙니다. [자동 페이퍼 운영](docs/autonomous-paper.md)을 참고하세요.
 합성 데모 자료를 이 결측의 대체물로 사용하지 않습니다. 구체적인 결과는 [검증 보고서](docs/validation-report.md)를 확인하세요.
 
@@ -16,8 +20,11 @@
 
 - CHIEF·SCAN·VET·BOOK은 **같은 전역 Provider·모델·키**를 사용합니다. 프로세스별 공용 클라이언트와 DB 설정 버전 검사를 둡니다.
 - 설정은 `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` 환경변수로 관리합니다. 에이전트별 override와 자동 모델 fallback은 없습니다.
+- 학습 루프는 결과를 측정해 개선안을 **제안**만 합니다. 전략 규칙은 자동으로 바꾸지 않습니다. [학습 루프](docs/learning-loop.md)를 참고하세요.
 - SIZE·FILLS·RISK는 결정론적 Python입니다. RISK는 LLM 대기열과 독립적으로 실행됩니다.
 - 실제 주문 제출, 지갑·서명, 실거래 전환 기능은 없습니다. `TRADING_MODE=paper`만 허용합니다.
+- 모든 자금은 가상 USD입니다. `main` 장부의 시작 금액은 `PAPER_INITIAL_CASH`(기본 1000)로 정하며 **장부를 처음 만들 때만** 적용합니다.
+  기존 장부의 잔고·이력은 바꾸지 않습니다. 다른 금액으로 새로 시작하려면 새 `DATABASE_URL`을 지정하세요. `trading-team init`이 실제 적용된 잔고를 표시합니다.
 - 원문에서 정하지 않은 수식·체결 의미는 버전 고정된 [구현 해석](docs/implementation-decisions.md)에 공개했습니다.
 
 ## 빠른 시작
@@ -135,6 +142,7 @@ Compose는 PostgreSQL을 사용하고 호스트 개발 명령은 `.env`의 DB UR
 
 | 문서 | 내용 |
 | --- | --- |
+| [인수인계](docs/handoff.md) | 현재 상태, 다음 할 일 우선순위, 환경 함정, 바꾸면 안 되는 결정 |
 | [원본 전략](docs/original-strategy-spec.md) | 전체 원문에서 확인한 규칙·수치·미정의 항목 |
 | [구현 해석](docs/implementation-decisions.md) | Kelly, 부분 체결, 추가 매수, 데이터·시간 처리 |
 | [운영 절차](docs/runbook.md) | 환경, 인증, 프로세스, Docker, 재생 및 장애 대응 |
@@ -142,7 +150,9 @@ Compose는 PostgreSQL을 사용하고 호스트 개발 명령은 `.env`의 DB UR
 | [아키텍처](docs/architecture.md) | 역할·데이터·결정론적 경계 |
 | [LLM 설계](docs/llm-provider-design.md) | 전역 설정, 기능 probe, 실패 처리 |
 | [CLI 호환](docs/cli-providers.md) | CLI 8종과 공통 JSON 브리지, 선택 설치와 전역 설정 |
+| [학습 루프](docs/learning-loop.md) | 결정 결과 측정, 모델 신뢰도·보정, 사람이 검토하는 개선 제안 |
 | [자동 페이퍼](docs/autonomous-paper.md) | 로컬 CPU 모델, 자동 작업·자료 공급·BOOK·정산·상태 확인 |
+| [무료 시장 관측](docs/market-observer.md) | Jupiter 깊이·Solana 보유자·GeckoTerminal 거래로 채우는 필드, 해석, 비용 |
 | [World Monitor](docs/world-monitor-integration.md) | REST/MCP/SDK 조사와 self-host 조건 |
 | [API 조사](docs/api-integration-plan.md) | DexScreener·Kalshi·Polymarket·Solana의 계약과 제한 |
 | [로드맵](docs/development-roadmap.md) | 구현 범위와 후속 장기 검증 |

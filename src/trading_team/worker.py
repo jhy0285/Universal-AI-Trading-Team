@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import signal
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 
-from trading_team import autonomy
+from trading_team import autonomy, learning
 from trading_team.domain import ChiefOutput, utcnow
 from trading_team.engine import Desk
 from trading_team.llm import LLMError
@@ -60,10 +60,23 @@ async def daily_report(desk: Desk) -> dict:
     except LLMError as exc:
         facts["report_degraded"] = exc.code
     desk.record_agent("daily-report", "CHIEF", "daily_report", facts)
+    performance_facts = facts["performance"]
+    desk.notifier.send(
+        f"{facts['date_seoul']} 마감 보고: 현금 {performance_facts.get('cash')} USD, "
+        f"평가 자산 {performance_facts.get('equity')}, 오늘 거절 {rejections}건"
+    )
     with desk.db.transaction() as s:
         account = lock_account(s, "main")
         audit(s, account, "DAILY_REPORT", facts)
     return facts
+
+
+async def retention(desk: Desk) -> dict:
+    days = desk.settings.snapshot_retention_days
+    if not days:
+        return {"status": "disabled"}
+    # Runs off the event loop so a large delete never delays the RISK job.
+    return await asyncio.to_thread(desk.db.prune_snapshots, utcnow() - timedelta(days=days))
 
 
 def build_scheduler(desk: Desk, leases: LeaseManager) -> AsyncIOScheduler:
@@ -123,6 +136,17 @@ def build_scheduler(desk: Desk, leases: LeaseManager) -> AsyncIOScheduler:
             scheduler.modify_job("scan", next_run_time=utcnow())
         return result
 
+    async def learn():
+        # Read-mostly analysis; it proposes changes but never alters trading behaviour.
+        result = await asyncio.to_thread(learning.review, desk.db, "main")
+        return {
+            "status": "reviewed",
+            "decisions": result["report"]["funnel"]["decisions"],
+            "open_proposals": sum(x["status"] == "proposed" for x in result["proposals"]),
+            "new_proposals": result["created"],
+            "automatic_policy_changes": False,
+        }
+
     async def world_monitor():
         readiness = await desk.wm.readiness()
         desk.record_agent(
@@ -170,6 +194,15 @@ def build_scheduler(desk: Desk, leases: LeaseManager) -> AsyncIOScheduler:
             id="book",
             **immediate,
         )
+        scheduler.add_job(
+            invoke,
+            "interval",
+            minutes=60,
+            args=["learning:main", learn],
+            id="learning",
+            name="Measure decisions and refresh improvement proposals hourly",
+            **immediate,
+        )
 
     scheduler.add_job(
         invoke,
@@ -206,6 +239,15 @@ def build_scheduler(desk: Desk, leases: LeaseManager) -> AsyncIOScheduler:
         args=["daily-report", lambda: daily_report(desk)],
         id="daily-report",
         name="CHIEF 23:00 Asia/Seoul",
+    )
+    scheduler.add_job(
+        invoke,
+        "cron",
+        hour=4,
+        minute=17,
+        args=["retention", lambda: retention(desk)],
+        id="retention",
+        name="Observation retention 04:17 Asia/Seoul",
     )
     return scheduler
 

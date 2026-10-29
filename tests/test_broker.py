@@ -5,7 +5,7 @@ from decimal import Decimal as D
 import pytest
 from sqlalchemy import func, select
 
-from trading_team.broker import PaperBroker
+from trading_team.broker import MARK_MAX_AGE_SECONDS, PaperBroker
 from trading_team.domain import Level
 from trading_team.metrics import performance
 from trading_team.storage import Account, LedgerEntry, PaperOrder, Position
@@ -140,7 +140,12 @@ def test_risk_exit_fee_and_closed_trade_metrics(db, snapshot, case):
 
 def test_stale_equity_never_zero_filled(db, snapshot):
     buy(db, snapshot)
-    metrics = performance(db, "paper", now=snapshot.fetched_at + timedelta(seconds=301))
+    # Marks stay valid for two 5-minute RISK runs, so one run's delay does not unprice equity.
+    between_runs = performance(db, "paper", now=snapshot.fetched_at + timedelta(seconds=400))
+    assert between_runs["equity"] is not None
+    metrics = performance(
+        db, "paper", now=snapshot.fetched_at + timedelta(seconds=MARK_MAX_AGE_SECONDS + 1)
+    )
     assert metrics["equity"] is None and metrics["net_pnl"] is None
     assert metrics["cash"] is not None
 
@@ -174,3 +179,101 @@ def test_decimal_small_price_exact_roundtrip(db, snapshot):
     assert D(result["notional"]) == D(result["quantity"]) * price
     assert D(result["notional"]) <= 60
     assert all(PaperBroker(db).integrity("paper").values())
+
+
+def test_paper_initial_cash_applies_only_to_a_new_main_ledger(db, tmp_path):
+    from trading_team.storage import Database
+
+    db.initialize(D("5000"))
+    with db.transaction() as s:
+        assert s.get(Account, "main").cash == s.get(Account, "main").initial_cash == 1000
+    fresh = Database(f"sqlite:///{tmp_path}/fresh.sqlite3")
+    fresh.initialize(D("5000"))
+    with fresh.transaction() as s:
+        assert s.get(Account, "main").cash == s.get(Account, "main").initial_cash == 5000
+    assert all(PaperBroker(fresh).integrity("main").values())
+    fresh.engine.dispose()
+    with pytest.raises(ValueError):
+        db.initialize(D("0"))
+
+
+def test_paper_initial_cash_setting_is_bounded():
+    from pydantic import ValidationError
+
+    from trading_team.settings import Settings
+
+    assert Settings(_env_file=None, paper_initial_cash="2500").paper_initial_cash == D("2500")
+    assert Settings(_env_file=None).public()["paper_initial_cash"] == "1000"
+    for value in ("0", "-1", "NaN", "100000001"):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, paper_initial_cash=value)
+
+
+def test_retention_prunes_only_unreferenced_old_live_evidence(db, snapshot):
+    from sqlalchemy import inspect
+
+    from trading_team.domain import utcnow
+    from trading_team.storage import Decision, SnapshotRow
+
+    now = utcnow()
+    old, recent = now - timedelta(days=20), now - timedelta(days=1)
+
+    def row(id_, kind, at, asset="solana:untraded", provenance="live"):
+        return SnapshotRow(
+            id=id_,
+            asset_id=asset,
+            kind=kind,
+            source="test",
+            provenance=provenance,
+            fetched_at=at,
+            payload="{}",
+        )
+
+    with db.transaction() as s:
+        s.add_all(
+            [
+                row("raw-old", "dex_search", old),
+                row("raw-recent", "jupiter_quote", recent),
+                row("market-old", "market", old),
+                row("market-cited", "market", old),
+                row("market-traded", "market", old, asset="solana:traded"),
+                row("resolution-old", "prediction_resolution", old),
+                row("fixture-old", "market", old, provenance="fixture"),
+            ]
+        )
+        s.add(
+            Decision(
+                cycle_id="c",
+                account_id="main",
+                asset_id="solana:untraded",
+                snapshot_id="market-cited",
+                allowed=False,
+                reason="TEST",
+            )
+        )
+        s.add(
+            Position(
+                account_id="main",
+                asset_id="solana:traded",
+                quantity=D(0),
+                cost_basis=D(0),
+                initial_price=D(1),
+                peak_price=D(1),
+            )
+        )
+    result = db.prune_snapshots(now - timedelta(days=14))
+    assert (result["raw_responses"], result["market"]) == (1, 1)
+    with db.transaction() as s:
+        kept = {x.id for x in s.query(SnapshotRow)}
+    assert {"raw-old", "market-old"}.isdisjoint(kept)
+    assert {
+        "raw-recent",
+        "market-cited",
+        "market-traded",
+        "resolution-old",
+        "fixture-old",
+    } <= kept
+    assert all(PaperBroker(db).integrity("main").values())
+    db.initialize()  # Idempotent on an existing ledger, including the snapshot index.
+    names = {x["name"] for x in inspect(db.engine).get_indexes("data_snapshots")}
+    assert "ix_data_snapshots_kind_fetched_at" in names

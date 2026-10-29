@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import Field
 from sqlalchemy import select
 
+from trading_team import learning
 from trading_team.data import DataError
 from trading_team.domain import PredictionQuestion, StrictModel, VenueTarget, utcnow
 from trading_team.engine import Desk
@@ -47,6 +50,17 @@ class BookRequest(RunRequest):
     targets: list[VenueTarget] = Field(min_length=1, max_length=10)
 
 
+class LearningRunRequest(StrictModel):
+    account_id: str = Field(default="main", pattern=r"^[A-Za-z0-9_-]{1,100}$")
+    lookback_days: int = Field(default=7, ge=1, le=90)
+
+
+class ProposalReview(StrictModel):
+    account_id: str = Field(default="main", pattern=r"^[A-Za-z0-9_-]{1,100}$")
+    status: Literal["acknowledged", "dismissed", "applied"]
+    note: str = Field(default="", max_length=500)
+
+
 class ReplayRequest(StrictModel):
     account_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,100}$")
     case: ReplayCase
@@ -61,7 +75,7 @@ def create_app(settings: Settings | None = None, desk: Desk | None = None) -> Fa
 
     @asynccontextmanager
     async def lifespan(_app):
-        db.initialize()
+        db.initialize(settings.paper_initial_cash)
         desk.activate_config()
         yield
         await desk.close()
@@ -255,6 +269,24 @@ def create_app(settings: Settings | None = None, desk: Desk | None = None) -> Fa
     @app.get("/comparison")
     def comparison():
         return comparisons(db)
+
+    @app.get("/learning")
+    def learning_report(account_id: str = "main"):
+        return learning.latest(db, account_id)
+
+    @app.post("/learning/run", dependencies=[Depends(admin)])
+    async def learning_run(body: LearningRunRequest):
+        async with leases.hold("learning:" + body.account_id):
+            return await asyncio.to_thread(
+                learning.review, db, body.account_id, None, body.lookback_days
+            )
+
+    @app.post("/learning/proposals/{proposal_id}", dependencies=[Depends(admin)])
+    def learning_review(proposal_id: str, body: ProposalReview):
+        try:
+            return learning.set_status(db, body.account_id, proposal_id, body.status, body.note)
+        except LookupError:
+            raise HTTPException(404, "UNKNOWN_PROPOSAL") from None
 
     @app.get("/audit")
     def audits(account_id: str = "main"):

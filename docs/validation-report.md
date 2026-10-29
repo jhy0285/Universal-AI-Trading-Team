@@ -1,5 +1,139 @@
 # 검증 보고서
 
+## 통합 후 검증 — 2026-10-29, UTC
+
+`claude/beautiful-faraday-wwthsb`와 `claude/nice-einstein-fz8wua`를 병합한 코드(후자를 기반으로 삼음)를 같은 컨테이너에서 실제 모델·실시장으로 확인했습니다.
+충돌 10개 중 VET 스키마와 SCAN·VET 프롬프트는 후자의 방식(손익비 0 허용 + SIZE 0, 짧은 핸들 enum)을 그대로 쓰고, 이 브랜치의 실패 진단·교정 재시도·학습 루프를 얹었습니다.
+
+| 검사 | 실제 관측과 범위 |
+| --- | --- |
+| 테스트 | SQLite·PostgreSQL 16 모두 pytest **251건 통과**. Ruff·문서 링크 검사 통과 |
+| **병합 중 발견한 결함** | 교정 재시도가 피드백을 JSON 사용자 메시지 *뒤에 이어 붙여* JSON을 깨뜨림. `json.loads(messages[-1])`로 입력을 읽는 소비자에서 `ValueError`가 나 사유가 `LLM_SCHEMA_INVALID`에서 `INPUT_OR_PROVENANCE_INVALID`로 바뀜. 후자의 기존 테스트가 잡음. 피드백을 `validation_feedback` 키로 넣도록 수정하고 테스트 보강 |
+| 실제 모델 probe | Qwen3-4B Q4_K_M, 4역할 모두 통과(약 31초) |
+| 실시장 1차 수집 | Solana 풀 28개 중 3개(수집당 관측 상한 `MARKET_OBSERVER_MAX_ASSETS`=3)에 관측 시각·보유자 수·집중도·온체인 시각·계약 점검·large-holder·매수 호가·두 거래 구간이 채워짐. 이전 값과 매도 호가는 비어 있음 |
+| 실시장 2차 수집(약 6분 뒤) | 관측 3개 중 2개에 이전 보유자·가격·유동성이 채워짐. 1개는 GeckoTerminal 거래 범위 부족(`TRADES_COVERAGE_INCOMPLETE`)으로 구간 미완성. 매도 호가는 0개(RISK가 보유 수량으로 견적) |
+| `main` 실사이클 | SCAN 22초, VET 84초, CHIEF 14초 모두 첫 응답 통과, 사이클 `completed`, 주문 0. VET까지 간 후보 1건은 모델이 `SIGNAL_ALREADY_PRICED_IN`으로 거절. 그 외 `CONCENTRATION_OVER_5_PERCENT` 1, `HOLDER_HISTORY_UNAVAILABLE` 1, 관측되지 않은 풀 `STALE_OR_UNKNOWN_MARKET_TIME` 51 |
+| 학습 루프(실제 결정) | 7일 창 결정 94건: `STALE_OR_UNKNOWN_MARKET_TIME` 78%, `ORIGINAL_SOLANA_ONLY` 19%. `DATA_COVERAGE` 제안 생성. 이 창에는 이 세션의 실험 호출(타임아웃 포함)이 섞여 있어 모델 통과율(SCAN 83%, VET 82%)은 운영 지표가 아님. 실제 진입이 없어 보정 표본은 0 |
+| 대시보드 | 실제 데이터가 든 DB와 API로 13개 화면 × 2개 계정 = **26개 화면**, 예외 0건 |
+
+**이전 절의 정정.** 아래 10-29 절의 "막는 것은 모델이 아니라 시장 자료 공급이며 유료 공급자가 필요하다"는 결론은 통합 버전에서는 틀렸습니다. 무료 공개 출처로 대부분의 필수 항목이 채워집니다.
+남은 자료 한계는 수집당 관측 풀 수(원천 호출 한도)와 일부 풀의 거래 범위 부족입니다.
+
+**여전히 검증하지 못한 것:** 모델이 PASS를 낸 뒤의 주문, 근거 있는 후보에 대한 VET 판단 품질(4B는 `signal_priced_in`을 거의 항상 true로 답함), BOOK 실제 진입, worker 장시간 연속 운영, 학습 루프의 가격·보정 지표를 실제 진입 데이터로 검증하는 일.
+
+## 실제 로컬 모델 재검증 — 2026-10-29, UTC
+
+> **통합 주의.** 이 절과 다음 절은 `claude/beautiful-faraday-wwthsb`가 독립적으로 작업하던 시점의 기록입니다. 이후 `claude/nice-einstein-fz8wua`(아래 10-22·10-23 절)와 통합하면서 이 절의 **VET 정규화와 SCAN·VET 프롬프트 규칙은 그쪽 방식으로 대체**했습니다(손익비 0 허용 + SIZE 0, 후보·증거를 짧은 핸들 enum으로 제한). 원인 분석과 관측 수치는 당시 사실로 남기며, 통합 후 코드의 실제 검증은 이 문서 맨 위의 "통합 후 검증" 절을 보세요.
+
+클라우드 네트워크에서 Hugging Face·DexScreener를 허용한 뒤 이 컨테이너에서 직접 실행했습니다.
+모델은 공식 `Qwen/Qwen3-4B-GGUF`의 `Qwen3-4B-Q4_K_M.gguf`(고정 revision `bc640142…`, 2,497,280,256 bytes, SHA-256 `7485fe6f…`)이고 llama.cpp b11790 CPU 배포본은 설치 도구가 SHA-256을 확인했습니다. 해시는 Hugging Face가 제공한 메타데이터이며 독립 출처는 아닙니다. CPU 3스레드로 실행했습니다.
+
+| 검사 | 실제 관측과 범위 |
+| --- | --- |
+| 4역할 schema probe | SCAN·VET·BOOK·CHIEF 모두 통과(약 27초) |
+| **VET 차단 원인** | 모델이 `{"verdict":"REJECT","win_probability":0,"win_payoff_ratio":0,"expected_return_fraction":0,…}`를 출력. llama.cpp는 JSON 스키마를 디코딩 문법으로만 쓰며 `gt=0`을 강제하지 못해 `0`이 디코딩을 통과하고 `Positive` 검증에서 `win_payoff_ratio:greater_than`으로 실패 |
+| 스키마 설명의 효과 | **없음.** llama.cpp는 스키마를 모델에게 보여 주지 않으므로 필드 규칙은 프롬프트에 직접 써야 함 |
+| 타임아웃 | 기본 120초에서 콜드 프롬프트(약 800토큰)가 시간 초과해 유일한 재시도를 소진. 프롬프트 캐시 후 두 번째 시도는 27초. 로컬 CPU 모델은 `LLM_TIMEOUT_SECONDS=300` 사용 |
+| 원인 수정 전 재생 | 교정 재시도만 있던 상태. VET가 타임아웃 → 스키마 실패 → 교정 재시도 후 통과(3회 호출), 총 5분 22초. 교정 재시도가 없던 원래 코드였다면 이 지점에서 차단 |
+| 수정 후 재생 | VET가 첫 응답에서 통과, 거절 필드는 모두 `null`, 증거 ID 정확히 복사. 총 1분 48초. 주문 0, 장부 무결성 유지 |
+| 후보 6개 SCAN(수정 전) | 모델이 증거 값에 `evidence_id: ` 라벨을 붙였고, "최대 10개" 지시에 실제 없는 후보 4개와 순차 패턴의 가짜 증거를 지어내 채움. 결정론적 검사가 `SCAN_UNKNOWN_OR_DUPLICATE_EVIDENCE`로 정확히 차단 |
+| 후보 6개 SCAN(프롬프트 수정 후) | 실존 ID 6개와 증거 6개 모두 정확한 값, 위조 없음 |
+| 후보 6개 전체 사이클 | SCAN 1 + VET 6 + CHIEF 1 = **8회 호출이 모두 첫 응답에서 통과**, 재시도 0. 약 9분. 주문 0(VET 6건 모두 REJECT) |
+| PASS 형태의 숫자 | 숫자·문자열 소수·음수 기대수익·경계값 `p=1`을 그대로 따라 쓰게 한 3건이 실제 문법 디코딩과 검증을 통과 |
+| 실시장 수집 | DexScreener BONK 검색 30개 풀(Solana 22). `pair_created_at`·거래량·유동성만 있고 `observed_at`·보유자 수와 이력·집중도·계약 점검·large-holder·buy/sell quote·이전 가격/유동성·두 거래 구간은 **22개 모두 결측** |
+| `main` 실사이클 | 31개 결정이 모두 차단(`STALE_OR_UNKNOWN_MARKET_TIME` 22, `ORIGINAL_SOLANA_ONLY` 9). 학습 루프가 `data-coverage:STALE_OR_UNKNOWN_MARKET_TIME` 제안을 생성 |
+| Solana 공용 RPC | 온체인 점검(`inspect_mint`) 호출 4회가 모두 HTTP 429. 공용 엔드포인트로는 집중도·온체인 시각을 얻지 못함 |
+| 테스트 | SQLite·PostgreSQL 16 모두 pytest **231건 통과**(위 변경 포함). Ruff 통과 |
+
+**여전히 검증하지 못한 것:** 모델이 PASS를 선택한 사례가 없어 확률·배당·기대수익을 *스스로 채운* 출력의 품질과 사이징 경로는 실제 모델로 보지 못했습니다.
+위 6개 후보에서 4B 모델은 보유자 증가가 큰 후보에도 모두 REJECT했습니다. 구조적으로 유효한 것이 판단이 옳다는 뜻은 아닙니다. 후보 순서도 설명한 기준(보유자 증가)대로 정렬되지 않았습니다.
+실제 진입은 여전히 0건이며, 막는 것은 모델이 아니라 시장 자료 공급입니다. worker 상시 구동, 동시 작업 중 지연, 장기 무중단은 검증하지 않았습니다.
+이 절의 합성 재생은 실제 자금·주문이 아니며 필수 자료의 대체물로 사용하지 않았습니다.
+
+## VET 스키마 대응·학습 루프 검증 — 2026-10-28, UTC
+
+| 검사 | 실제 관측과 범위 |
+| --- | --- |
+| SQLite | pytest **222건 통과**(기존 204건 + 신규 18건). Ruff check/format 통과 |
+| PostgreSQL | 로컬 PostgreSQL 16 임시 클러스터에서 `--postgres` 전체 **222건 통과** 후 클러스터 삭제 |
+| 스키마 실패 진단 | 0~100 척도 확률(`win_probability: 65`)과 예상치 못한 키를 가진 응답이 `win_probability:less_than_equal`처럼 필드·오류 유형만 남기는지 검사. 응답 값은 detail에 들어가지 않고, 모델이 만든 키 이름은 영숫자·밑줄 외 문자를 `?`로 바꿔 40자까지만 포함 |
+| 교정 재시도 | 스키마 실패 뒤 필드 피드백을 붙여 정확히 1회 재시도하고, 계속 실패하면 멈춤. 첫 실패는 `final=false`로 사용량에 남지만 감독기는 호출당 결과 1건만 봄 |
+| 학습 루프 | 정답을 손으로 계산한 합성 자료로 Brier(0.22/0.25/0.41), 가격 변화 평균, 표본 부족 시 제안 없음, 풀이 다른 스냅샷 제외, 미성숙 horizon 제외, 제안 생명주기와 감사 체인 검사 |
+| API·worker | 관리 토큰 없이는 실행·검토 401, 알 수 없는 제안 404. 자동 모드에서만 매시간 작업이 등록되고 실행 기록에 `automatic_policy_changes: false` 저장 |
+| 대시보드 | 실제 API를 띄운 AppTest로 13개 화면 × 2개 계정 = **26개 화면**, 예외 0건. 제안 표와 검토 버튼 렌더링 확인 |
+
+**검증하지 못한 것:** 이 환경의 프록시가 `huggingface.co`와 DexScreener를 정책상 차단(HTTP 403)해 실제 로컬 모델을 받거나 실시장 자료를 읽지 못했습니다.
+이 시점에는 실제 모델을 받지 못해 원인을 퍼센트 척도 오류로 추정했으며, 이 추정은 **틀렸습니다.** 아래 2026-10-29 절에서 실제 모델로 원인을 확정했습니다.
+학습 루프의 가격·보정 지표는 합성 자료로만 검증했고, 운영 계정에는 진입이 없어 보정 표본이 0입니다.
+
+## 로컬 모델 비교·장기 운영 준비 — 2026-10-23, Asia/Seoul
+
+같은 실제 관측 9개(두 차례 자동 운영에서 이력이 붙은 pool), 같은 SCAN·VET 요청, CPU 4코어, llama.cpp b11790에서 비교했습니다.
+
+| 항목 | Qwen3-4B Q4_K_M | Qwen3-8B Q4_K_M |
+| --- | --- | --- |
+| 4역할 probe | 28초 | 53초 |
+| SCAN (후보 9개) | 137초. 1위 정확, 2·3위 뒤바뀜, 중복 1건(엔진이 제거) | 194초. 같은 순위 |
+| VET 1회 | 55–80초 | 86–100초 (읽기 약 19 token/s, 생성 약 3.5 token/s) |
+| `signal_priced_in` | 9건 모두 true | 9건 모두 true |
+| 승률·손익비·기대수익 | 승률 대부분 0.65로 고정, 3건 null | 9건 모두 null |
+
+두 모델 모두 VET 판단을 신뢰할 수 없어 결정론적 게이트가 모든 진입을 막습니다. 설명문은 자주 스스로 모순됩니다(“반영되지 않음 → true”).
+SCAN 입력 축소와 짧은 인용 핸들 전에는 8B SCAN이 300초 제한을 넘었고, 4B는 −15.5% 보유자 변화를 1위로 매겼습니다.
+
+| 장기 운영 점검 | 결과 |
+| --- | --- |
+| 저장량 | 원본 응답 요약 후 1분 수집당 약 142KB → 59KB. 14일 보존과 일일 정리로 상한 |
+| 알림 | Discord·Slack webhook, Telegram 전송을 모의 HTTP로 검사. 실패는 오류 종류만 기록하고 거래에 영향 없음 |
+| 테스트 | SQLite pytest 233건 통과 |
+
+## 실데이터 자동 운영 고도화 — 2026-10-23, Asia/Seoul
+
+인용 enum, VET 사전 검사, 후보 단위 실패 격리, 체결 직전 재견적, 신규 상장 탐색, SCAN 시점 거래 구간 조회를 추가하고 실데이터로 실행했습니다.
+
+| 검사 | 실제 관측과 범위 |
+| --- | --- |
+| 인용 enum | 로컬 Qwen3-4B(llama.cpp b11790)가 합성 재생에서 SCAN·VET 모두 정확한 evidence ID를 인용. 이전의 문장 인용 차단이 사라짐 |
+| 자동 운영 45분 | 신규 상장 피드 30개 pool, 상위 3개를 매분 관측. 수집 오류 0. SCAN 3회: 이력 없음 3건은 모델 호출 없이 거절, 실제 거래 구간으로 `SELLS_DOMINATE_BOTH_WINDOWS` 2건, `PRICE_OUTRUNS_HOLDERS` 1건. 모델까지 간 3건은 VET REJECT, 주문 0 |
+| 거절 원인 분석 | 모델 설명은 모두 “매도 측 관측 없음”. 진입에는 매도 깊이가 필요하지 않고 자료는 Python이 이미 검증함. VET 입력에서 매도 측을 빼고, 판단할 항목만 묻도록 수정 |
+| 자동 운영 33분 (수정 후) | SCAN 3회. 사전 검사가 `PRICE_OUTRUNS_HOLDERS`·`ONCHAIN_UNAVAILABLE`·`SELLS_DOMINATE_BOTH_WINDOWS`를 모델 없이 판정. 마지막 사이클은 실행 시간 제한으로 VET 중 종료되어 `interrupted`로 기록 |
+| 수정 후 VET 직접 호출 | 실제 관측 3건에 PASS를 냈으나 모두 `signal_priced_in=true`라 결정론적 게이트가 차단. 서로 다른 두 후보에 같은 추정치(0.65, 2.3, 0.12)를 내고, 보유자 +8.8%·가격 −22%를 “이미 반영”으로 판단 |
+| 테스트 | SQLite·PostgreSQL 16.15 각각 pytest **225건 통과** |
+
+실데이터로 수집→사전 검사→SCAN→VET까지 자동 경로가 끝까지 동작함을 확인했습니다. 주문은 아직 없습니다.
+남은 제약은 4B 로컬 모델의 판단 품질입니다. 추정치가 근거와 무관해 보이므로 이 모델로는 Kelly 크기의 의미가 약합니다.
+더 큰 모델이나 CLI Provider에서의 판단 품질, 장시간 연속 운영은 검증하지 않았습니다.
+
+## 무료 시장 관측 — 2026-10-22, Asia/Seoul
+
+DexScreener에 없는 원천 시각·보유자 이력·큰 지갑 매도·실행 깊이를 [무료 시장 관측](market-observer.md)으로 구현했습니다.
+
+| 검사 | 실제 관측과 범위 |
+| --- | --- |
+| 출처 확인 | Jupiter quote 키 없이 HTTP 200, `contextSlot` 포함. 실제 헤더로 키 없는 bucket이 약 10초당 5회임을 관측. 공식 표는 키 없이 30회/분, 무료 키 60회/분 |
+| 보유자 조회 | 공개 RPC `getTokenLargestAccounts`는 429. `getProgramAccounts`(소유자·수량 40바이트)는 새 Token-2022 토큰 1,099개 계정을 0.11초에 반환. BONK는 10MB 상한에서 중단 |
+| 유동성 풀 판정 | PumpSwap·pump.fun·Orca·Meteora DLMM·Raydium CLMM vault는 pool 주소 소유. Raydium AMM v4·CPMM, Meteora DAMM v2·DBC의 공용 권한 주소를 실제 vault로 확인 |
+| GeckoTerminal | 공식 공개 한도는 30회/분. 이 클라우드의 공유 IP에서는 429가 잦았고 일부 호출만 성공. 다른 네트워크 경로의 실제 응답으로 필드 형식 확인 |
+| 실제 수집 2회 | 새 Solana 토큰 3개, 약 7분 간격. 3개 모두 Jupiter 4단계 깊이·관측 시각·보유자·계약 점검 확보. 2회차에 자체 이전 보유자 수·시각이 채워짐. 거래 구간은 GeckoTerminal 성공 자산만 확보 |
+| 실제 SCAN 사이클 | 로컬 Qwen3-4B 4역할 probe 통과. 관측된 3개 pool은 SCAN 자료 게이트 통과, 관측되지 않은 12개는 `STALE_OR_UNKNOWN_MARKET_TIME`. 모델 SCAN이 evidence에 ID 대신 문장을 적어 `SCAN_UNKNOWN_OR_DUPLICATE_EVIDENCE`로 차단. 주문 0 |
+| 테스트 | SQLite·PostgreSQL 16.15 각각 pytest **217건 통과**. 모의 응답으로 관측→VET 통과→Jupiter 깊이 체결→RISK 보유·청산, 큰 지갑 매도 차단, 429 재시도와 unknown 처리, 10MB 중단 검사 |
+
+자료 공백은 해소됐지만 실제 진입은 아직 없습니다. 이번 실행의 차단 원인은 4B 로컬 모델의 evidence ID 미준수입니다.
+더 큰 모델이나 다른 Provider에서의 판단 품질, 장시간 연속 수집의 공급 안정성은 검증하지 않았습니다.
+
+## VET 스키마 오류 수정·가상 시작 금액 — 2026-10-22, Asia/Seoul
+
+| 검사 | 실제 관측과 범위 |
+| --- | --- |
+| 원인 재현 | 공식 Qwen3-4B Q4_K_M GGUF(SHA-256 `7485fe6f…34fdf5`, 2,497,280,256 bytes)와 고정 llama.cpp b11790, 저장소와 같은 서버 옵션. 4역할 probe 통과 후 합성 재생 3회. VET가 매번 `REJECT`와 `win_payoff_ratio: 0`을 출력해 `LLM_SCHEMA_INVALID`로 사이클 전체가 차단됨 |
+| 원인 | schema의 `exclusiveMinimum: 0`을 llama.cpp grammar가 number에 강제하지 않고, Pydantic `gt=0` 검증이 0을 거절. Decimal schema의 제약 없는 string 분기도 같은 방식으로 범위를 우회할 수 있음 |
+| 수정 | 모든 Provider에 보내는 모델 출력 schema의 Decimal을 JSON number만 허용. VET 손익비는 0 이상을 받고 0은 추정 없음으로 SIZE 0. 진입 규칙·게이트 순서는 변경 없음 |
+| 수정 후 실제 모델 | 같은 조건 재생 3회 모두 사이클 completed. VET REJECT 기록 후 결정론적 게이트가 `ROUND_TRIP_FEES_ERASE_EDGE`로 차단. 주문·체결 0, 장부 무결성 유지 |
+| 가상 시작 금액 | `PAPER_INITIAL_CASH`가 새 main 장부의 가상 USD를 정함. 기존 장부는 유지하고 `init`이 실제 잔고와 안내를 표시함을 CLI로 확인 |
+| 테스트 | SQLite pytest **208건 통과**, 별도 PostgreSQL 16.15(UTF-8)에서도 **208건 통과**. Ruff check/format·문서 검사 통과. 새 VET 회귀 테스트가 수정 전 코드에서 실패함을 확인 |
+
+모델은 합성 후보를 여전히 REJECT하고 evidence에 evidence_id 대신 필드 텍스트를 적습니다. PASS 경로의 실제 모델 호환과 판단 품질은 검증하지 않았습니다.
+
 ## 자동 페이퍼·로컬 CPU 모델 검증 — 2026-10-21, Asia/Seoul
 
 사용자는 페이퍼머니로 자동 운영을 요청하고 API 키 없는 로컬 LLM 사용을 선택했습니다.
