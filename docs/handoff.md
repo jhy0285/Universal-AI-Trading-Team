@@ -84,8 +84,8 @@ PostgreSQL로 테스트하려면 임시 클러스터를 띄워 `UAT_TEST_DATABAS
 - **CPU 모델은 느립니다.** 이 컨테이너(4코어, 3스레드)에서 콜드 800토큰 프롬프트가 120초를 넘겨 유일한 재시도를 소진했습니다. 로컬 모델은 `LLM_TIMEOUT_SECONDS=300`을 쓰세요(최대값).
 - **사용자 메시지는 항상 유효한 JSON으로 유지하세요.** 테스트 더블과 일부 소비자가 `json.loads(messages[-1])`을 합니다. 교정 재시도 피드백은 `validation_feedback` 키입니다. 이어 붙이면 사유가 `INPUT_OR_PROVENANCE_INVALID`로 바뀝니다.
 - **SQLite 트랜잭션은 모두 `BEGIN IMMEDIATE`입니다.** 긴 분석은 짧은 트랜잭션으로 나누세요(`learning.gate_regret` 참고). 아니면 수집이 최대 30초 기다립니다.
-- **`pkill -f`·`pgrep -f`는 명령줄에 같은 문자열이 있으면 자기 셸도 죽입니다.** 대괄호 요령(`[l]lama`)도 같은 명령 안에 원래 문자열이 있으면 소용없습니다.
-  PID를 시작할 때 저장하거나, `/proc/*/cmdline`을 읽는 작은 Python 스크립트로 자기 자신을 제외하고 찾으세요.
+- **프로세스를 이름으로 찾아 죽이지 마세요.** `pkill -f`·`pgrep -f`는 물론 `/proc/*/cmdline` 스캔도, 명령줄에 같은 문자열(스크립트 본문 포함)이 있으면 자기 셸을 죽입니다(이 작업에서 4번 겪음).
+  서버는 시작할 때 PID를 저장해 두거나, 실행 파일 경로 `os.readlink(f"/proc/{pid}/exe")`가 `.../llama-server`로 끝나는지로 찾으세요.
 - `.env`, `.services/`(모델 2.5GB), `.cache/`, `.state/`(SQLite 장부)는 git에 없습니다. 비밀 값을 출력하거나 커밋하지 마세요.
 - 실제 모델 출력을 회귀 테스트로 고정하는 방식이 효과적이었습니다(`tests/test_llm.py`의 `REAL_QWEN_VET_REJECT`).
 
