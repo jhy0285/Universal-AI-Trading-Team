@@ -6,7 +6,7 @@
 ## 현재 실행 범위
 
 - 로컬 CPU LLM 하나로 CHIEF·SCAN·VET·BOOK을 실행합니다. 전역 모델 ID와 모델 파일 URL·SHA-256은 환경변수에 있습니다.
-- 실제 로컬 추론의 간단한 schema probe는 네 역할 모두 통과했습니다. 일반 분석의 합성 재생에서는 VET가 `LLM_SCHEMA_INVALID`로 차단됐으며 출력 호환 문제는 미해결입니다.
+- 실제 로컬 추론의 간단한 schema probe는 네 역할 모두 통과했습니다. 일반 분석의 합성 재생에서 VET가 차단된 원인(거절 시 `null` 대신 `0`)은 고쳤고 실제 모델로 재검증했습니다. 모델이 PASS를 선택한 사례는 아직 없습니다.
 - 시작 시 모델 점검·시장자료 수집·RISK·WM 점검을 실행합니다. 모델 준비 후 첫 SCAN을 시작합니다.
 - 시장자료는 60초, SCAN은 15분, RISK는 5분, BOOK과 WM seed는 15분, 마감 보고는 서울 23시에 실행합니다.
 - 학습 루프는 매시간 결정 결과를 측정하고 개선 제안을 갱신합니다. 규칙은 바꾸지 않습니다. [학습 루프](learning-loop.md)
@@ -32,6 +32,7 @@ LOCAL_LLM_MODEL_URL=
 LOCAL_LLM_MODEL_SHA256=
 LOCAL_LLM_THREADS=3
 LOCAL_LLM_CONTEXT_SIZE=8192
+LLM_TIMEOUT_SECONDS=300
 AUTONOMOUS_ENABLED=true
 ```
 

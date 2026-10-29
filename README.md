@@ -5,8 +5,8 @@
 ## 현재 상태
 
 **로컬 CPU LLM과 자동 페이퍼 수집·감시를 실행합니다.** 네 AI 역할의 간단한 실제 추론·출력 스키마 점검은 통과했습니다.
-다만 실제 모델을 연결한 합성 재생에서 VET 응답이 `LLM_SCHEMA_INVALID`로 차단되어 일반 분석 호환 검증은 미완료입니다.
-스키마 단위 설명, 실패 필드 기록, 교정 재시도를 추가했으나 **실제 모델에서는 아직 재검증하지 못했습니다.** `replay --use-model`로 확인하세요.
+VET의 `LLM_SCHEMA_INVALID`는 원인을 확정해 고쳤고(거절하면서 `null` 대신 `0`을 쓰는 출력), 같은 로컬 모델로 SCAN·VET·CHIEF 전체 사이클을 재검증했습니다.
+다만 모델이 PASS를 낸 사례는 아직 없어 숫자 판단 경로는 실제 모델의 *판단*으로 검증되지 않았습니다. [검증 보고서](docs/validation-report.md)를 확인하세요.
 전역 `LLM_PROVIDER=llama_cpp`와 환경변수의 모델 ID를 사용하며 API 키가 필요 없습니다.
 로컬 World Monitor의 실제 Redis/seed도 구성했고 fear/greed·prediction 데이터를 수집했습니다. 교차 신호가 없어 BOOK은 대기합니다.
 원본 밈코인 전략은 보유자 이력·whale·체결 깊이·원천 시각 자료가 부족해 신규 진입을 차단합니다.

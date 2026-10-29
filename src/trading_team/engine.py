@@ -400,7 +400,7 @@ class Desk:
                 scan = recorded_scan or await self.runtime.generate(
                     "SCAN",
                     {
-                        "task": "Rank at most 10 candidates by evidence-based holder growth; no orders.",
+                        "task": "Rank candidates by evidence-based holder growth; no orders. Return only assets that appear in the supplied snapshots, and fewer than 10 if fewer are supplied; never invent an asset. candidate_ids holds asset_id values. evidence holds one evidence_id value per candidate, copied exactly as the bare 64-character hexadecimal string without any label.",
                         "snapshots": [
                             analysis_snapshot(x, scan=True) | {"evidence_id": x.digest}
                             for x in eligible

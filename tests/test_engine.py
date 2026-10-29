@@ -159,6 +159,65 @@ async def test_forged_candidates_cannot_order(db, settings, case):
     await desk.close()
 
 
+class ObservedQwenScan(SchemaProvider):
+    """The two mistakes qwen3-4b-q4_k_m made on a six-candidate SCAN request (captured 2026-10-29)."""
+
+    def __init__(self, case, mistake):
+        super().__init__(case)
+        self.mistake = mistake
+
+    async def generate(self, messages, schema):
+        if schema is not ScanOutput or "example" in json.loads(messages[-1]["content"]):
+            return await super().generate(messages, schema)
+        snapshot = self.case.events[0].snapshots[0]
+        if self.mistake == "labelled_digest":
+            # Every real digest was copied correctly, but with the key name glued on.
+            output = ScanOutput(
+                candidate_ids=[snapshot.asset_id],
+                evidence=[f"evidence_id: {snapshot.digest}"],
+                explanation="ranked",
+            )
+        else:
+            # Asked for "at most 10", it padded the list with assets and digests that do not exist.
+            output = ScanOutput(
+                candidate_ids=[snapshot.asset_id, "solana:SWEEP6"],
+                evidence=[
+                    snapshot.digest,
+                    "8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8",
+                ],
+                explanation="ranked",
+            )
+        return Reply(output, {"input_tokens": 10, "output_tokens": 5})
+
+
+@pytest.mark.parametrize("mistake", ["labelled_digest", "invented_candidates"])
+async def test_observed_small_model_scan_mistakes_stay_blocked(db, settings, case, mistake):
+    desk = Desk(settings, db, LLMRuntime(settings, ObservedQwenScan(case, mistake)))
+    try:
+        await desk.probe()
+        event = case.events[0]
+        result = await desk.run_cycle("paper", mistake, snapshots=event.snapshots, now=event.at)
+        # Evidence is an exact match against digests the application computed, never a fuzzy one.
+        assert result["reason"] == "SCAN_UNKNOWN_OR_DUPLICATE_EVIDENCE" and not result["orders"]
+    finally:
+        await desk.close()
+
+
+async def test_task_text_states_rules_a_decoding_grammar_cannot_enforce(db, settings, case):
+    provider = SchemaProvider(case)
+    desk = Desk(settings, db, LLMRuntime(settings, provider))
+    try:
+        await desk.probe()
+        event = case.events[0]
+        await desk.run_cycle("paper", "task-text", snapshots=event.snapshots, now=event.at)
+        tasks = {name: payload["task"] for name, payload in provider.calls if "task" in payload}
+        # llama.cpp turns the schema into a grammar and never shows it to the model.
+        assert "never invent an asset" in tasks["ScanOutput"] and "bare" in tasks["ScanOutput"]
+        assert "to null, never 0" in tasks["VetOutput"]
+    finally:
+        await desk.close()
+
+
 async def test_recorded_output_cannot_drive_main_account(db, settings, case):
     desk = Desk(settings, db, LLMRuntime(settings, NoLLM()))
     with pytest.raises(ValueError, match="recorded responses"):
