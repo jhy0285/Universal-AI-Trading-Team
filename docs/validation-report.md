@@ -1,8 +1,29 @@
 # 검증 보고서
 
+## 통합 후 검증 — 2026-10-29, UTC
+
+`claude/beautiful-faraday-wwthsb`와 `claude/nice-einstein-fz8wua`를 병합한 코드(후자를 기반으로 삼음)를 같은 컨테이너에서 실제 모델·실시장으로 확인했습니다.
+충돌 10개 중 VET 스키마와 SCAN·VET 프롬프트는 후자의 방식(손익비 0 허용 + SIZE 0, 짧은 핸들 enum)을 그대로 쓰고, 이 브랜치의 실패 진단·교정 재시도·학습 루프를 얹었습니다.
+
+| 검사 | 실제 관측과 범위 |
+| --- | --- |
+| 테스트 | SQLite·PostgreSQL 16 모두 pytest **251건 통과**. Ruff·문서 링크 검사 통과 |
+| **병합 중 발견한 결함** | 교정 재시도가 피드백을 JSON 사용자 메시지 *뒤에 이어 붙여* JSON을 깨뜨림. `json.loads(messages[-1])`로 입력을 읽는 소비자에서 `ValueError`가 나 사유가 `LLM_SCHEMA_INVALID`에서 `INPUT_OR_PROVENANCE_INVALID`로 바뀜. 후자의 기존 테스트가 잡음. 피드백을 `validation_feedback` 키로 넣도록 수정하고 테스트 보강 |
+| 실제 모델 probe | Qwen3-4B Q4_K_M, 4역할 모두 통과(약 31초) |
+| 실시장 1차 수집 | Solana 풀 28개 중 3개(수집당 관측 상한 `MARKET_OBSERVER_MAX_ASSETS`=3)에 관측 시각·보유자 수·집중도·온체인 시각·계약 점검·large-holder·매수 호가·두 거래 구간이 채워짐. 이전 값과 매도 호가는 비어 있음 |
+| 실시장 2차 수집(약 6분 뒤) | 관측 3개 중 2개에 이전 보유자·가격·유동성이 채워짐. 1개는 GeckoTerminal 거래 범위 부족(`TRADES_COVERAGE_INCOMPLETE`)으로 구간 미완성. 매도 호가는 0개(RISK가 보유 수량으로 견적) |
+| `main` 실사이클 | SCAN 22초, VET 84초, CHIEF 14초 모두 첫 응답 통과, 사이클 `completed`, 주문 0. VET까지 간 후보 1건은 모델이 `SIGNAL_ALREADY_PRICED_IN`으로 거절. 그 외 `CONCENTRATION_OVER_5_PERCENT` 1, `HOLDER_HISTORY_UNAVAILABLE` 1, 관측되지 않은 풀 `STALE_OR_UNKNOWN_MARKET_TIME` 51 |
+| 학습 루프(실제 결정) | 7일 창 결정 94건: `STALE_OR_UNKNOWN_MARKET_TIME` 78%, `ORIGINAL_SOLANA_ONLY` 19%. `DATA_COVERAGE` 제안 생성. 이 창에는 이 세션의 실험 호출(타임아웃 포함)이 섞여 있어 모델 통과율(SCAN 83%, VET 82%)은 운영 지표가 아님. 실제 진입이 없어 보정 표본은 0 |
+| 대시보드 | 실제 데이터가 든 DB와 API로 13개 화면 × 2개 계정 = **26개 화면**, 예외 0건 |
+
+**이전 절의 정정.** 아래 10-29 절의 "막는 것은 모델이 아니라 시장 자료 공급이며 유료 공급자가 필요하다"는 결론은 통합 버전에서는 틀렸습니다. 무료 공개 출처로 대부분의 필수 항목이 채워집니다.
+남은 자료 한계는 수집당 관측 풀 수(원천 호출 한도)와 일부 풀의 거래 범위 부족입니다.
+
+**여전히 검증하지 못한 것:** 모델이 PASS를 낸 뒤의 주문, 근거 있는 후보에 대한 VET 판단 품질(4B는 `signal_priced_in`을 거의 항상 true로 답함), BOOK 실제 진입, worker 장시간 연속 운영, 학습 루프의 가격·보정 지표를 실제 진입 데이터로 검증하는 일.
+
 ## 실제 로컬 모델 재검증 — 2026-10-29, UTC
 
-> **통합 주의.** 이 절과 다음 절은 `claude/beautiful-faraday-wwthsb`가 독립적으로 작업하던 시점의 기록입니다. 이후 `claude/nice-einstein-fz8wua`(아래 10-22·10-23 절)와 통합하면서 이 절의 **VET 정규화와 SCAN·VET 프롬프트 규칙은 그쪽 방식으로 대체**했습니다(손익비 0 허용 + SIZE 0, 후보·증거를 짧은 핸들 enum으로 제한). 원인 분석과 관측 수치는 당시 사실로 남기며, 통합 후 코드의 실제 검증은 맨 아래 "통합 후 검증" 절을 보세요.
+> **통합 주의.** 이 절과 다음 절은 `claude/beautiful-faraday-wwthsb`가 독립적으로 작업하던 시점의 기록입니다. 이후 `claude/nice-einstein-fz8wua`(아래 10-22·10-23 절)와 통합하면서 이 절의 **VET 정규화와 SCAN·VET 프롬프트 규칙은 그쪽 방식으로 대체**했습니다(손익비 0 허용 + SIZE 0, 후보·증거를 짧은 핸들 enum으로 제한). 원인 분석과 관측 수치는 당시 사실로 남기며, 통합 후 코드의 실제 검증은 이 문서 맨 위의 "통합 후 검증" 절을 보세요.
 
 클라우드 네트워크에서 Hugging Face·DexScreener를 허용한 뒤 이 컨테이너에서 직접 실행했습니다.
 모델은 공식 `Qwen/Qwen3-4B-GGUF`의 `Qwen3-4B-Q4_K_M.gguf`(고정 revision `bc640142…`, 2,497,280,256 bytes, SHA-256 `7485fe6f…`)이고 llama.cpp b11790 CPU 배포본은 설치 도구가 SHA-256을 확인했습니다. 해시는 Hugging Face가 제공한 메타데이터이며 독립 출처는 아닙니다. CPU 3스레드로 실행했습니다.

@@ -421,9 +421,10 @@ def derive_proposals(report: dict) -> list[dict]:
                     "severity": "warn",
                     "title": f"{share:.0%} of {total} decisions were blocked by "
                     f"{group['reason']}, a missing observation",
-                    "action": "Supply this observation from a verified source, for example "
-                    "MARKET_DATA_FEED_URL. Do not relax the gate: the original strategy "
-                    "requires it.",
+                    "action": "Supply this observation. The free observer fills only the most "
+                    "liquid pools per collection (MARKET_OBSERVER_MAX_ASSETS, bounded by the "
+                    "sources' rate limits); MARKET_DATA_FEED_URL adds a verified provider. "
+                    "Do not relax the gate: the original strategy requires it.",
                     "evidence": group
                     | {
                         "forward_24h": regret.get((False, group["reason"]), {})
