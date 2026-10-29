@@ -10,11 +10,13 @@ from typing import Any
 
 from sqlalchemy import (
     DateTime,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     create_engine,
+    delete,
     event,
     select,
 )
@@ -67,6 +69,7 @@ class Account(Base):
 
 class SnapshotRow(Base):
     __tablename__ = "data_snapshots"
+    __table_args__ = (Index("ix_data_snapshots_kind_fetched_at", "kind", "fetched_at"),)
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     asset_id: Mapped[str] = mapped_column(String(250), index=True)
     source: Mapped[str] = mapped_column(String(500))
@@ -339,16 +342,22 @@ class Database:
 
         self.sessions = sessionmaker(self.engine, expire_on_commit=False)
 
-    def initialize(self):
+    def initialize(self, initial_cash: Decimal = Decimal("1000")):
+        # The paper balance applies only when the main ledger is first created; never rewritten.
+        if not initial_cash.is_finite() or initial_cash <= 0:
+            raise ValueError("invalid paper balance")
         Base.metadata.create_all(self.engine)
+        # create_all adds indexes only to new tables; existing ledgers receive them here.
+        for index in SnapshotRow.__table__.indexes:
+            index.create(self.engine, checkfirst=True)
         with self.transaction() as session:
             if session.get(Account, "main") is None:
                 session.add(
                     Account(
                         id="main",
                         provenance="live",
-                        cash=Decimal("1000"),
-                        initial_cash=Decimal("1000"),
+                        cash=initial_cash,
+                        initial_cash=initial_cash,
                     )
                 )
 
@@ -356,6 +365,33 @@ class Database:
     def transaction(self) -> Iterator[Session]:
         with self.sessions.begin() as session:
             yield session
+
+    def prune_snapshots(self, before: datetime) -> dict:
+        """Delete live observation evidence older than `before` that nothing depends on.
+
+        Kept: snapshots cited by decisions, every snapshot of an asset ever held (fills and
+        RISK marks), settlement evidence, and all fixture or recorded inputs. Ledgers, orders,
+        fills and audit events are never touched.
+        """
+        old = (SnapshotRow.provenance == "live") & (SnapshotRow.fetched_at < before)
+        with self.transaction() as s:
+            raw = s.execute(
+                delete(SnapshotRow).where(
+                    old, SnapshotRow.kind.not_in(("market", "prediction_resolution"))
+                )
+            ).rowcount
+            market = s.execute(
+                delete(SnapshotRow).where(
+                    old,
+                    SnapshotRow.kind == "market",
+                    SnapshotRow.id.not_in(select(Decision.snapshot_id)),
+                    SnapshotRow.asset_id.not_in(select(Position.asset_id)),
+                )
+            ).rowcount
+            account = lock_account(s, "main")
+            result = {"before": before.isoformat(), "raw_responses": raw, "market": market}
+            audit(s, account, "SNAPSHOT_RETENTION", result)
+        return result
 
     def create_account(self, account_id: str, provenance: str, cash: Decimal = Decimal("1000")):
         if (

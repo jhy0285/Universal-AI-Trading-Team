@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -64,20 +65,32 @@ class PublicDataClient:
             await self.client.aclose()
 
     async def request(
-        self, method: str, url: str, *, kind: str, json_body=None, params=None, headers=None
+        self,
+        method: str,
+        url: str,
+        *,
+        kind: str,
+        json_body=None,
+        params=None,
+        headers=None,
+        summarize=None,
     ):
+        body = bytearray()
         try:
-            response = await self.client.request(
+            async with self.client.stream(
                 method, url, json=json_body, params=params, headers=headers
-            )
+            ) as response:
+                if response.status_code != 200:
+                    raise DataError(f"DATA_HTTP_{response.status_code}")
+                # Stop reading oversized bodies instead of downloading them in full.
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > 10_000_000:
+                        raise DataError("DATA_RESPONSE_TOO_LARGE")
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             raise DataError("DATA_TRANSPORT_FAILED") from exc
-        if response.status_code != 200:
-            raise DataError(f"DATA_HTTP_{response.status_code}")
-        if len(response.content) > 10_000_000:
-            raise DataError("DATA_RESPONSE_TOO_LARGE")
         try:
-            data = response.json()
+            data = json.loads(body)
         except ValueError as exc:
             raise DataError("DATA_INVALID_JSON") from exc
         if not isinstance(data, (dict, list)):
@@ -91,6 +104,10 @@ class PublicDataClient:
                 "fetched_at": now.isoformat(),
                 "payload": data,
             }
+            if summarize is not None:
+                # Large payloads keep a digest and the derived counts, not every account row.
+                envelope["payload"] = summarize(data)
+                envelope["payload_sha256"] = stable_hash(data)
             digest = stable_hash(envelope)
             with self.db.transaction() as s:
                 if not s.get(SnapshotRow, digest):
@@ -111,6 +128,18 @@ class PublicDataClient:
 
 class DexScreener:
     BASE = "https://api.dexscreener.com"
+
+    @staticmethod
+    def _pairs_summary(body):
+        # Normalized market snapshots keep the fields used; the raw list keeps only identities.
+        pairs = body.get("pairs") if isinstance(body, dict) else body
+        return {
+            "pairs": [
+                [x.get("chainId"), x.get("pairAddress"), (x.get("baseToken") or {}).get("address")]
+                for x in (pairs if isinstance(pairs, list) else [])
+                if isinstance(x, dict)
+            ]
+        }
 
     def __init__(self, data: PublicDataClient):
         self.data = data
@@ -148,7 +177,11 @@ class DexScreener:
         if not query.strip() or len(query) > 100:
             raise DataError("DEX_QUERY_INVALID")
         body = await self.data.request(
-            "GET", self.BASE + "/latest/dex/search", kind="dex_search", params={"q": query}
+            "GET",
+            self.BASE + "/latest/dex/search",
+            kind="dex_search",
+            params={"q": query},
+            summarize=self._pairs_summary,
         )
         if not isinstance(body, dict) or not isinstance(body.get("pairs"), list):
             raise DataError("DEX_PAIRS_UNAVAILABLE")
@@ -161,11 +194,67 @@ class DexScreener:
                 continue
         return result
 
+    @staticmethod
+    def _launch_summary(body):
+        return [
+            [x.get("chainId"), x.get("tokenAddress")]
+            for x in (body if isinstance(body, list) else [])
+            if isinstance(x, dict)
+        ]
+
+    async def launches(self) -> list[MarketSnapshot]:
+        """Pools of the newest Solana tokens in DexScreener's launch feeds (profiles, boosts)."""
+        mints, failures = [], []
+        for path in ("/token-profiles/latest/v1", "/token-boosts/latest/v1"):
+            try:
+                body = await self.data.request(
+                    "GET", self.BASE + path, kind="dex_launches", summarize=self._launch_summary
+                )
+            except DataError as exc:
+                failures.append(exc.code)
+                continue
+            for item in body if isinstance(body, list) else []:
+                mint = item.get("tokenAddress") if isinstance(item, dict) else None
+                if (
+                    isinstance(mint, str)
+                    and item.get("chainId") == "solana"
+                    and mint.isalnum()
+                    and 32 <= len(mint) <= 44
+                    and mint not in mints
+                ):
+                    mints.append(mint)
+        if not mints:
+            if failures:
+                raise DataError(failures[0])
+            return []
+        # The token endpoint accepts at most 30 addresses per request.
+        body = await self.data.request(
+            "GET",
+            f"{self.BASE}/tokens/v1/solana/{','.join(mints[:30])}",
+            kind="dex_tokens",
+            summarize=self._pairs_summary,
+        )
+        if not isinstance(body, list):
+            raise DataError("DEX_PAIRS_UNAVAILABLE")
+        now, wanted = utcnow(), set(mints[:30])
+        result = []
+        for item in body:
+            try:
+                snapshot = self.normalize(item, now)
+            except (DataError, ValueError, TypeError, AttributeError):
+                continue
+            if snapshot.chain == "solana" and snapshot.asset_id.split(":", 1)[1] in wanted:
+                result.append(snapshot)
+        return result
+
     async def token(self, chain: str, mint: str) -> list[MarketSnapshot]:
         if chain != "solana" or not mint.isalnum() or len(mint) > 60:
             raise DataError("DEX_ORIGINAL_TOKEN_INVALID")
         body = await self.data.request(
-            "GET", self.BASE + "/latest/dex/tokens/" + quote(mint, safe=""), kind="dex_token"
+            "GET",
+            self.BASE + "/latest/dex/tokens/" + quote(mint, safe=""),
+            kind="dex_token",
+            summarize=self._pairs_summary,
         )
         if not isinstance(body, dict) or not isinstance(body.get("pairs"), list):
             raise DataError("DEX_PAIRS_UNAVAILABLE")
@@ -699,21 +788,38 @@ class PredictionMarkets:
         return prices
 
 
+B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def b58encode(raw: bytes) -> str:
+    number, text = int.from_bytes(raw, "big"), ""
+    while number:
+        number, rest = divmod(number, 58)
+        text = B58[rest] + text
+    return "1" * (len(raw) - len(raw.lstrip(b"\0"))) + text
+
+
 class SolanaOnchain:
-    METHODS = {
-        "getTokenLargestAccounts",
-        "getTokenSupply",
-        "getAccountInfo",
-        "getBlockTime",
-        "getProgramAccounts",
-    }
+    METHODS = {"getAccountInfo", "getBlockTime", "getProgramAccounts"}
     TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+    TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+    # Token-2022 extensions without transfer fees, hooks, delegates, freezes or pausing.
+    SAFE_2022_EXTENSIONS = {"metadataPointer", "tokenMetadata"}
+    # Shared vault authorities, each checked against a live pool's vault on 2026-10-22.
+    # Pump.fun, PumpSwap, Orca, Meteora DLMM and Raydium CLMM vaults belong to the pool itself.
+    POOL_AUTHORITIES = {
+        "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",  # Raydium AMM v4
+        "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL",  # Raydium CPMM
+        "HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC",  # Meteora DAMM v2
+        "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM",  # Meteora DBC
+    }
+    MAX_ACCOUNTS = 30_000
 
     def __init__(self, settings: Settings, data: PublicDataClient):
         self.url = settings.solana_rpc_url
         self.data = data
 
-    async def rpc(self, method: str, params: list):
+    async def rpc(self, method: str, params: list, summarize=None):
         if method not in self.METHODS:
             raise DataError("RPC_METHOD_NOT_ALLOWED")
         value = await self.data.request(
@@ -721,78 +827,116 @@ class SolanaOnchain:
             self.url,
             kind="solana_" + method,
             json_body={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+            summarize=summarize,
         )
         if not isinstance(value, dict) or value.get("error") or "result" not in value:
             raise DataError("SOLANA_RPC_ERROR")
         return value["result"]
 
-    async def inspect_mint(self, mint: str) -> dict:
-        if not mint.isalnum() or not 32 <= len(mint) <= 44:
-            raise DataError("SOLANA_MINT_INVALID")
-        largest, supply, account = await asyncio.gather(
-            self.rpc("getTokenLargestAccounts", [mint, {"commitment": "finalized"}]),
-            self.rpc("getTokenSupply", [mint, {"commitment": "finalized"}]),
-            self.rpc(
-                "getAccountInfo", [mint, {"encoding": "jsonParsed", "commitment": "finalized"}]
-            ),
-        )
-        amount = int(supply["value"]["amount"])
-        values = largest.get("value") or []
-        if amount <= 0 or not values:
-            raise DataError("SOLANA_SUPPLY_OR_ACCOUNTS_EMPTY")
-        largest_amount = max(int(x["amount"]) for x in values)
-        share = Decimal(largest_amount) / Decimal(amount)
-        slots = [int(x["context"]["slot"]) for x in (largest, supply, account)]
-        if max(slots) - min(slots) > 150:
-            raise DataError("SOLANA_OBSERVATIONS_NOT_ALIGNED")
-        block_time = await self.rpc("getBlockTime", [min(slots)])
-        if not isinstance(block_time, int) or block_time <= 0:
+    async def block_time(self, slot: int) -> datetime:
+        value = await self.rpc("getBlockTime", [slot])
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise DataError("SOLANA_OBSERVATION_TIME_UNKNOWN")
-        value = account.get("value") or {}
-        parsed = (value.get("data") or {}).get("parsed") or {}
-        info = parsed.get("info") or {}
-        safe = (
-            value.get("owner") == self.TOKEN_PROGRAM
-            and parsed.get("type") == "mint"
-            and info.get("isInitialized") is True
-            and info.get("mintAuthority") is None
-            and info.get("freezeAuthority") is None
-        )
+        return datetime.fromtimestamp(value, UTC)
+
+    @staticmethod
+    def _scan_summary(body):
+        result = body.get("result") if isinstance(body, dict) else None
+        if not isinstance(result, dict):
+            return {"error": "unavailable"}
+        accounts = result.get("value")
         return {
-            "largest_token_account_share": share,
-            "onchain_verified": True,
-            "onchain_observed_at": datetime.fromtimestamp(block_time, UTC),
-            "contract_safe": safe,
-            "contract_source": "solana_legacy_spl_mint_authorities_only",
-            "proxy_definition": "largest token account / total supply; not beneficial-wallet concentration",
+            "context": result.get("context"),
+            "token_accounts": len(accounts) if isinstance(accounts, list) else None,
         }
 
-    async def holder_count(self, mint: str, *, explicitly_enabled: bool = False) -> dict:
-        if not explicitly_enabled:
-            raise DataError("FULL_HOLDER_SCAN_NOT_ENABLED")
-        result = await self.rpc(
+    async def mint_account(self, mint: str) -> tuple[dict, str, dict]:
+        if not mint.isalnum() or not 32 <= len(mint) <= 44:
+            raise DataError("SOLANA_MINT_INVALID")
+        account = await self.rpc(
+            "getAccountInfo", [mint, {"encoding": "jsonParsed", "commitment": "confirmed"}]
+        )
+        value = account.get("value") or {}
+        program = value.get("owner")
+        parsed = (value.get("data") or {}).get("parsed") or {}
+        info = parsed.get("info") or {}
+        if (
+            program not in {self.TOKEN_PROGRAM, self.TOKEN_2022_PROGRAM}
+            or parsed.get("type") != "mint"
+        ):
+            raise DataError("SOLANA_MINT_PROGRAM_UNSUPPORTED")
+        try:
+            if int(info["supply"]) <= 0 or not 0 <= int(info["decimals"]) <= 18:
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            raise DataError("SOLANA_SUPPLY_UNKNOWN") from None
+        return account, program, info
+
+    async def scan_mint(self, mint: str, pools: set[str]) -> dict:
+        """Holders, the largest non-pool owner and mint authorities from one aligned scan.
+
+        Every token account of the mint is read with only its owner and amount bytes.
+        Liquidity pool vaults are not wallets and are excluded from holders and concentration.
+        """
+        account, program, info = await self.mint_account(mint)
+        supply = int(info["supply"])
+        filters = [{"memcmp": {"offset": 0, "bytes": mint}}]
+        if program == self.TOKEN_PROGRAM:
+            filters.insert(0, {"dataSize": 165})
+        scan = await self.rpc(
             "getProgramAccounts",
             [
-                self.TOKEN_PROGRAM,
+                program,
                 {
-                    "encoding": "jsonParsed",
-                    "commitment": "finalized",
+                    "encoding": "base64",
+                    "commitment": "confirmed",
                     "withContext": True,
-                    "filters": [{"dataSize": 165}, {"memcmp": {"offset": 0, "bytes": mint}}],
+                    "dataSlice": {"offset": 32, "length": 40},
+                    "filters": filters,
                 },
             ],
+            summarize=self._scan_summary,
         )
-        values = result.get("value") if isinstance(result, dict) else None
-        if not isinstance(values, list) or len(values) > 100_000:
+        rows = scan.get("value") if isinstance(scan, dict) else None
+        if not isinstance(rows, list) or len(rows) > self.MAX_ACCOUNTS:
             raise DataError("HOLDER_SCAN_INCOMPLETE_OR_TOO_LARGE")
-        owners = set()
-        for item in values:
-            info = item["account"]["data"]["parsed"]["info"]
-            if int(info["tokenAmount"]["amount"]) > 0:
-                owners.add(info["owner"])
-        timestamp = await self.rpc("getBlockTime", [result["context"]["slot"]])
+        excluded = set(pools) | self.POOL_AUTHORITIES
+        owners: dict[str, int] = {}
+        try:
+            for row in rows:
+                raw = base64.b64decode(row["account"]["data"][0], validate=True)
+                if len(raw) != 40:
+                    raise ValueError
+                amount = int.from_bytes(raw[32:], "little")
+                owner = b58encode(raw[:32])
+                if amount and owner not in excluded:
+                    owners[owner] = owners.get(owner, 0) + amount
+            slots = [int(account["context"]["slot"]), int(scan["context"]["slot"])]
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise DataError("HOLDER_SCAN_INVALID") from None
+        if abs(slots[0] - slots[1]) > 150:
+            raise DataError("SOLANA_OBSERVATIONS_NOT_ALIGNED")
+        observed_at = await self.block_time(min(slots))
+        ranked = sorted(owners.items(), key=lambda item: item[1], reverse=True)
+        extensions = {
+            x.get("extension") for x in info.get("extensions") or [] if isinstance(x, dict)
+        }
+        safe = (
+            info.get("isInitialized") is True
+            and info.get("mintAuthority") is None
+            and info.get("freezeAuthority") is None
+            and (program == self.TOKEN_PROGRAM or extensions <= self.SAFE_2022_EXTENSIONS)
+        )
         return {
             "holder_count": len(owners),
-            "observed_at": datetime.fromtimestamp(timestamp, UTC),
-            "source": "full_spl_token_account_owner_scan",
+            "largest_token_account_share": Decimal(ranked[0][1]) / Decimal(supply)
+            if ranked
+            else Decimal(0),
+            "top_owners": [owner for owner, _ in ranked[:20]],
+            "observed_at": observed_at,
+            "contract_safe": safe,
+            "contract_source": "solana_mint_authorities_and_token2022_extensions",
+            "proxy_definition": "largest non-pool owner (all its token accounts) / total supply",
+            "token_accounts": len(rows),
+            "decimals": int(info["decimals"]),
         }

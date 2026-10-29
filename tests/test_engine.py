@@ -4,6 +4,7 @@ import json
 from datetime import timedelta
 from decimal import Decimal as D
 
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -19,7 +20,7 @@ from trading_team.domain import (
     stable_hash,
 )
 from trading_team.engine import Desk
-from trading_team.llm import Attempt, LLMRuntime, Reply
+from trading_team.llm import Attempt, HTTPProvider, LLMError, LLMRuntime, Reply
 from trading_team.replay import run_replay
 from trading_team.storage import AgentRecord, ModelUsage, Position
 
@@ -75,15 +76,17 @@ class SchemaProvider:
         self.calls.append((schema.__name__, payload))
         if "example" in payload:
             result = schema.model_validate(payload["example"])
-        elif schema is ScanOutput:
-            result = (
-                self.case.events[0].scan.model_copy(update={"candidate_ids": ["invented"]})
-                if self.forged
-                else self.case.events[0].scan
+        elif issubclass(schema, ScanOutput):
+            rows = payload["snapshots"]
+            result = ScanOutput(
+                candidate_ids=["invented"] if self.forged else [x["candidate_id"] for x in rows],
+                evidence=[x["evidence_id"] for x in rows],
+                explanation="Mock ranking",
             )
-        elif schema is VetOutput:
-            result = next(iter(self.case.events[0].vet.values()))
-        elif schema is BookOutput:
+        elif issubclass(schema, VetOutput):
+            vet = next(iter(self.case.events[0].vet.values()))
+            result = vet.model_copy(update={"evidence": [payload["evidence_id"]]})
+        elif issubclass(schema, BookOutput):
             result = BookOutput(
                 probability_yes=".75",
                 abstain=False,
@@ -155,67 +158,9 @@ async def test_forged_candidates_cannot_order(db, settings, case):
     await desk.probe()
     event = case.events[0]
     result = await desk.run_cycle("paper", "forgery", snapshots=event.snapshots, now=event.at)
-    assert result["reason"] == "SCAN_UNKNOWN_OR_DUPLICATE_EVIDENCE" and not result["orders"]
+    # The per-call schema only admits supplied IDs, so the invented one fails validation.
+    assert result["reason"] == "LLM_SCHEMA_INVALID" and not result["orders"]
     await desk.close()
-
-
-class ObservedQwenScan(SchemaProvider):
-    """The two mistakes qwen3-4b-q4_k_m made on a six-candidate SCAN request (captured 2026-10-29)."""
-
-    def __init__(self, case, mistake):
-        super().__init__(case)
-        self.mistake = mistake
-
-    async def generate(self, messages, schema):
-        if schema is not ScanOutput or "example" in json.loads(messages[-1]["content"]):
-            return await super().generate(messages, schema)
-        snapshot = self.case.events[0].snapshots[0]
-        if self.mistake == "labelled_digest":
-            # Every real digest was copied correctly, but with the key name glued on.
-            output = ScanOutput(
-                candidate_ids=[snapshot.asset_id],
-                evidence=[f"evidence_id: {snapshot.digest}"],
-                explanation="ranked",
-            )
-        else:
-            # Asked for "at most 10", it padded the list with assets and digests that do not exist.
-            output = ScanOutput(
-                candidate_ids=[snapshot.asset_id, "solana:SWEEP6"],
-                evidence=[
-                    snapshot.digest,
-                    "8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8",
-                ],
-                explanation="ranked",
-            )
-        return Reply(output, {"input_tokens": 10, "output_tokens": 5})
-
-
-@pytest.mark.parametrize("mistake", ["labelled_digest", "invented_candidates"])
-async def test_observed_small_model_scan_mistakes_stay_blocked(db, settings, case, mistake):
-    desk = Desk(settings, db, LLMRuntime(settings, ObservedQwenScan(case, mistake)))
-    try:
-        await desk.probe()
-        event = case.events[0]
-        result = await desk.run_cycle("paper", mistake, snapshots=event.snapshots, now=event.at)
-        # Evidence is an exact match against digests the application computed, never a fuzzy one.
-        assert result["reason"] == "SCAN_UNKNOWN_OR_DUPLICATE_EVIDENCE" and not result["orders"]
-    finally:
-        await desk.close()
-
-
-async def test_task_text_states_rules_a_decoding_grammar_cannot_enforce(db, settings, case):
-    provider = SchemaProvider(case)
-    desk = Desk(settings, db, LLMRuntime(settings, provider))
-    try:
-        await desk.probe()
-        event = case.events[0]
-        await desk.run_cycle("paper", "task-text", snapshots=event.snapshots, now=event.at)
-        tasks = {name: payload["task"] for name, payload in provider.calls if "task" in payload}
-        # llama.cpp turns the schema into a grammar and never shows it to the model.
-        assert "never invent an asset" in tasks["ScanOutput"] and "bare" in tasks["ScanOutput"]
-        assert "to null, never 0" in tasks["VetOutput"]
-    finally:
-        await desk.close()
 
 
 async def test_recorded_output_cannot_drive_main_account(db, settings, case):
@@ -309,3 +254,143 @@ async def test_book_commits_probability_before_prices_or_stops_degraded(
     else:
         assert not price_calls and result["reason"] == "WORLD_MONITOR_DEGRADED"
     await desk.close()
+
+
+@pytest.mark.parametrize(
+    ("evidence", "reason"),
+    [("cited", "ROUND_TRIP_FEES_ERASE_EDGE"), ("prose", "VET_MODEL_LLM_SCHEMA_INVALID")],
+)
+async def test_local_model_vet_reject_with_zero_estimates_completes(
+    db, settings, case, evidence, reason
+):
+    # Reply recorded from Qwen3-4B Q4_K_M on llama.cpp b11790 for this demo case. The grammar
+    # does not enforce exclusive bounds, so 0 used to fail the whole cycle as LLM_SCHEMA_INVALID.
+    # The model wrote prose as evidence; the per-call enum now makes a grammar cite the ID, and an
+    # unconstrained provider's prose rejects only that candidate.
+    vet_reply = {
+        "verdict": "REJECT",
+        "signal_priced_in": False,
+        "uses_world_news": False,
+        "win_probability": 0,
+        "win_payoff_ratio": 0,
+        "expected_return_fraction": 0,
+        "evidence": ["holder_count: 1100", "previous_holder_count: 1000"],
+        "explanation": "The evidence is incomplete and does not provide sufficient information.",
+    }
+    schemas = {}
+
+    def respond(request):
+        body = json.loads(request.content)
+        schema = body["response_format"]["json_schema"]
+        schemas[schema["name"]] = schema["schema"]
+        payload = json.loads(body["messages"][-1]["content"])
+        if "example" in payload:
+            content = payload["example"]
+        elif schema["name"] == "ScanOutput":
+            content = {"candidate_ids": ["A1"], "evidence": ["E1"], "explanation": "ranked"}
+        elif schema["name"] == "VetOutput":
+            cite = [payload["evidence_id"]] if evidence == "cited" else vet_reply["evidence"]
+            content = vet_reply | {"evidence": cite}
+        else:
+            content = {"summary": "Recorded facts only.", "evidence": []}
+        return httpx.Response(
+            200,
+            json={
+                "model": "local-model",
+                "choices": [{"message": {"content": json.dumps(content)}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            },
+        )
+
+    cfg = settings.model_copy(update={"llm_provider": "llama_cpp", "llm_model": "local-model"})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        desk = Desk(cfg, db, LLMRuntime(cfg, HTTPProvider(cfg, client)))
+        try:
+            assert (await desk.probe())["verified"]
+            result = await run_replay(desk, case, "local-model-replay", use_model=True)
+        finally:
+            await desk.close()
+    cycle = result["results"][0]
+    assert cycle["status"] == "completed" and cycle["orders"] == []
+    assert cycle["decisions"] == [
+        {
+            "asset_id": case.events[0].snapshots[0].asset_id,
+            "allowed": False,
+            "reason": reason,
+        }
+    ]
+    assert all(result["integrity"].values())
+    properties = schemas["VetOutput"]["properties"]
+    # The model cites a short handle; the recorded analysis carries the snapshot hash.
+    assert properties["evidence"]["items"]["enum"] == ["E1"]
+    assert properties["evidence"]["minItems"] == 1
+    for name in ("win_probability", "win_payoff_ratio", "expected_return_fraction"):
+        assert [x["type"] for x in properties[name]["anyOf"]] == ["number", "null"]
+    assert properties["win_probability"]["anyOf"][0] == {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0,
+    }
+
+
+class FailingFirstVet(SchemaProvider):
+    """The first candidate's VET call fails; later candidates answer normally."""
+
+    def __init__(self, case, failures=1):
+        super().__init__(case)
+        self.failures = failures
+
+    async def generate(self, messages, schema):
+        payload = json.loads(messages[-1]["content"])
+        if issubclass(schema, ScanOutput) and "snapshots" in payload:
+            rows = payload["snapshots"]
+            return Reply(
+                schema(
+                    candidate_ids=[x["candidate_id"] for x in rows],
+                    evidence=[x["evidence_id"] for x in rows],
+                    explanation="both",
+                ),
+                {},
+            )
+        if issubclass(schema, VetOutput) and "evidence_id" in payload:
+            if self.failures:
+                self.failures -= 1
+                raise LLMError("LLM_REFUSAL_OR_INCOMPLETE")
+            vet = next(iter(self.case.events[0].vet.values()))
+            return Reply(vet.model_copy(update={"evidence": [payload["evidence_id"]]}), {})
+        return await super().generate(messages, schema)
+
+
+async def test_one_candidate_model_failure_rejects_only_that_candidate(db, settings, case):
+    event = case.events[0]
+    first = event.snapshots[0]
+    second_id = "solana:FIXTURE_SECOND_NOT_A_REAL_TOKEN"
+    second = first.model_copy(
+        update={
+            "asset_id": second_id,
+            "buy_quote": first.buy_quote.model_copy(update={"asset_id": second_id}),
+        }
+    )
+    desk = Desk(settings, db, LLMRuntime(settings, FailingFirstVet(case)))
+    await desk.probe()
+    result = await desk.run_cycle("paper", "isolated", snapshots=[first, second], now=event.at)
+    await desk.close()
+    assert result["status"] == "completed"
+    reasons = {x["asset_id"]: x["reason"] for x in result["decisions"]}
+    assert reasons == {
+        first.asset_id: "VET_MODEL_LLM_REFUSAL_OR_INCOMPLETE",
+        second_id: "VET_PASS",
+    }
+    assert [x["asset_id"] for x in result["orders"]] == [second_id]
+
+
+async def test_model_replays_on_test_ledgers_never_halt_the_live_desk(db, settings, case):
+    from trading_team.storage import Account
+
+    desk = Desk(settings, db, LLMRuntime(settings, FailingFirstVet(case, failures=10)))
+    await desk.probe()
+    for index in range(4):
+        await run_replay(desk, case, f"model-replay-{index}", use_model=True)
+    await desk.close()
+    with db.transaction() as s:
+        assert not s.get(Account, "main").killed

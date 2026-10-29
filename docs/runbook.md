@@ -47,8 +47,8 @@ Codex CLI는 API 키 없이 기존 로그인을 사용합니다. 사용자 PC의
 ```
 
 공개 DexScreener 자료를 보존합니다. 값이 있다는 사실과 거래에 충분한 자료가 있다는 사실을 구별합니다.
-스캐너 화면의 null·stale 사유를 확인하세요. 보유자 이력·구간별 거래·whale 상태·timestamp가 있는 실행 깊이는 추가 연속 자료 공급이 필요합니다.
-온체인 최대 계정 비율은 실소유자 지갑 비율이 아닙니다. `getProgramAccounts` 전체 스캔은 비용 때문에 기본 비활성입니다.
+스캐너 화면의 null·stale 사유와 `collect` 결과의 `errors`를 확인하세요. 출처별 실패 코드가 기록됩니다.
+Jupiter 429는 무료 키, GeckoTerminal 429는 개인 PC 실행, 보유자 조회 실패는 다른 RPC로 해결합니다. [무료 시장 관측](market-observer.md)을 참고하세요.
 
 WM 필수 검사:
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import signal
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -60,10 +60,23 @@ async def daily_report(desk: Desk) -> dict:
     except LLMError as exc:
         facts["report_degraded"] = exc.code
     desk.record_agent("daily-report", "CHIEF", "daily_report", facts)
+    performance_facts = facts["performance"]
+    desk.notifier.send(
+        f"{facts['date_seoul']} 마감 보고: 현금 {performance_facts.get('cash')} USD, "
+        f"평가 자산 {performance_facts.get('equity')}, 오늘 거절 {rejections}건"
+    )
     with desk.db.transaction() as s:
         account = lock_account(s, "main")
         audit(s, account, "DAILY_REPORT", facts)
     return facts
+
+
+async def retention(desk: Desk) -> dict:
+    days = desk.settings.snapshot_retention_days
+    if not days:
+        return {"status": "disabled"}
+    # Runs off the event loop so a large delete never delays the RISK job.
+    return await asyncio.to_thread(desk.db.prune_snapshots, utcnow() - timedelta(days=days))
 
 
 def build_scheduler(desk: Desk, leases: LeaseManager) -> AsyncIOScheduler:
@@ -226,6 +239,15 @@ def build_scheduler(desk: Desk, leases: LeaseManager) -> AsyncIOScheduler:
         args=["daily-report", lambda: daily_report(desk)],
         id="daily-report",
         name="CHIEF 23:00 Asia/Seoul",
+    )
+    scheduler.add_job(
+        invoke,
+        "cron",
+        hour=4,
+        minute=17,
+        args=["retention", lambda: retention(desk)],
+        id="retention",
+        name="Observation retention 04:17 Asia/Seoul",
     )
     return scheduler
 

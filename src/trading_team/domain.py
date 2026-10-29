@@ -2,16 +2,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    WithJsonSchema,
+    create_model,
+    model_validator,
+)
 
 Nonnegative = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
 Positive = Annotated[Decimal, Field(gt=0, allow_inf_nan=False)]
 Probability = Annotated[Decimal, Field(ge=0, le=1, allow_inf_nan=False)]
 Role = Literal["CHIEF", "SCAN", "VET", "BOOK", "SIZE", "FILLS", "RISK"]
+# Bounded free text: a grammar then bounds generation, so slow CPU models cannot run away.
+Explanation = Annotated[str, Field(max_length=800)]
 
 
 def utcnow() -> datetime:
@@ -137,62 +148,29 @@ class MarketSnapshot(StrictModel):
 
 
 class ScanOutput(StrictModel):
-    candidate_ids: list[str] = Field(
-        max_length=10, description="asset_id values copied from the supplied snapshots; at most 10."
-    )
-    evidence: list[str] = Field(
-        description="evidence_id values copied from the supplied snapshots, one per candidate."
-    )
-    explanation: str = Field(description="One or two short sentences.")
+    candidate_ids: list[str] = Field(max_length=10)
+    evidence: list[str]
+    explanation: Explanation
 
 
 class VetOutput(StrictModel):
     verdict: Literal["PASS", "PASS_PARTIAL", "REJECT"]
     signal_priced_in: bool
     uses_world_news: bool
-    win_probability: Probability | None = Field(
-        description="Estimated chance of a winning trade as a decimal fraction from 0 to 1 "
-        "(0.6 means 60 percent; never 60). null when rejecting."
-    )
-    win_payoff_ratio: Positive | None = Field(
-        description="Average win divided by average loss, a number greater than 0. "
-        "null when rejecting."
-    )
-    expected_return_fraction: Decimal | None = Field(
-        description="Expected return of the trade as a decimal fraction (0.05 means 5 percent). "
-        "null when rejecting."
-    )
-    evidence: list[str] = Field(
-        description="The supplied evidence_id, copied exactly, when the verdict relies on it."
-    )
-    explanation: str = Field(description="One or two short sentences.")
-
-    @model_validator(mode="before")
-    @classmethod
-    def rejection_placeholder(cls, data):
-        # A rejecting model often writes 0 for the payoff ratio instead of null. Local runtimes
-        # cannot enforce "greater than 0" while decoding, so drop that unusable placeholder for a
-        # rejection only. A PASS with a non-positive ratio stays invalid, since sizing needs it.
-        if isinstance(data, dict) and data.get("verdict") == "REJECT":
-            try:
-                unusable = Decimal(str(data["win_payoff_ratio"])) <= 0
-            except (KeyError, InvalidOperation):
-                unusable = False
-            if unusable:
-                return data | {"win_payoff_ratio": None}
-        return data
+    win_probability: Probability | None
+    # Constrained decoders do not enforce exclusive numeric bounds, and models answer 0 when
+    # rejecting. Zero means no positive payoff estimate; SIZE treats it as no position.
+    win_payoff_ratio: Nonnegative | None
+    expected_return_fraction: Decimal | None
+    evidence: list[str]
+    explanation: Explanation
 
 
 class BookOutput(StrictModel):
-    probability_yes: Probability | None = Field(
-        description="Chance the question resolves YES as a decimal fraction from 0 to 1 "
-        "(0.35 means 35 percent; never 35). null only when abstaining."
-    )
+    probability_yes: Probability | None
     abstain: bool
-    evidence: list[str] = Field(
-        description="The supplied evidence_id, copied exactly, when not abstaining."
-    )
-    explanation: str = Field(description="One or two short sentences.")
+    evidence: list[str]
+    explanation: Explanation
 
     @model_validator(mode="after")
     def probability_required(self) -> BookOutput:
@@ -201,8 +179,36 @@ class BookOutput(StrictModel):
         return self
 
 
+def cited[M: BaseModel](
+    model: type[M], *, required: str | None = None, **choices: Sequence[str]
+) -> type[M]:
+    """`model` with identifier lists limited to the supplied values (a JSON-schema enum).
+
+    Constrained decoders then cannot write prose or invented IDs into these fields, and other
+    providers fail schema validation instead. `required` must cite at least one value.
+    """
+    overrides: dict = {}
+    for name, values in choices.items():
+        allowed = tuple(dict.fromkeys(values))
+        if not allowed:
+            raise ValueError(f"{name} has nothing to cite")
+        limit = next(
+            (m.max_length for m in model.model_fields[name].metadata if hasattr(m, "max_length")),
+            None,
+        )
+        # Always an enum (never const): the most widely supported constraint across providers.
+        choice = Annotated[
+            Literal[allowed], WithJsonSchema({"type": "string", "enum": list(allowed)})
+        ]
+        overrides[name] = (
+            list[choice],
+            Field(min_length=1 if name == required else 0, max_length=limit),
+        )
+    return create_model(model.__name__, __base__=model, **overrides)
+
+
 class ChiefOutput(StrictModel):
-    summary: str
+    summary: str = Field(max_length=2000)
     evidence: list[str]
 
 

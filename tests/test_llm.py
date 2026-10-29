@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from decimal import Decimal
 
 import httpx
 import pytest
 
 from trading_team.domain import BookOutput, ProbeOutput, ScanOutput, VetOutput
 from trading_team.llm import CodexCLIProvider, HTTPProvider, LLMError, LLMRuntime, Reply
+from trading_team.llm_types import output_schema
 from trading_team.settings import Settings
 
 
@@ -271,14 +273,6 @@ VET_REJECT = {
 }
 
 
-def test_output_schemas_state_units_for_small_models():
-    properties = VetOutput.model_json_schema()["properties"]
-    assert "never 60" in properties["win_probability"]["description"]
-    assert (
-        "never 35" in BookOutput.model_json_schema()["properties"]["probability_yes"]["description"]
-    )
-
-
 async def test_schema_failure_names_fields_without_echoing_output():
     settings = Settings(_env_file=None, llm_provider="openai", llm_model="one", llm_api_key="fake")
     content = json.dumps(
@@ -319,9 +313,11 @@ async def test_runtime_retries_schema_failure_once_with_field_feedback(settings)
     runtime = LLMRuntime(settings, provider, attempts.append)
     result = await runtime.generate("VET", {"snapshot": "x"}, VetOutput, "c")
     assert result.verdict == "REJECT"
-    assert "VALIDATION_FEEDBACK" not in provider.calls[0][-1]["content"]
-    repaired = provider.calls[1][-1]["content"]
-    assert "win_probability:less_than_equal" in repaired and "never percentages" in repaired
+    assert "validation_feedback" not in json.loads(provider.calls[0][-1]["content"])
+    repaired = json.loads(provider.calls[1][-1]["content"])  # Still one valid JSON document.
+    assert repaired["snapshot"] == "x"
+    feedback = repaired["validation_feedback"]
+    assert "win_probability:less_than_equal" in feedback and "never percentages" in feedback
     assert [x["role"] for x in provider.calls[1]] == ["system", "user"]
     assert [(x.status, x.final) for x in attempts] == [
         ("LLM_SCHEMA_INVALID", False),
@@ -361,26 +357,62 @@ REAL_QWEN_VET_REJECT = """{
 }"""
 
 
-async def test_real_local_model_rejection_with_zero_ratio_is_accepted_as_a_rejection():
+async def test_real_local_model_rejection_with_zero_ratio_is_accepted():
     settings = Settings(_env_file=None, llm_provider="openai", llm_model="one", llm_api_key="fake")
     body = {"choices": [{"message": {"content": REAL_QWEN_VET_REJECT}, "finish_reason": "stop"}]}
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body))
     ) as client:
         reply = await HTTPProvider(settings, client).generate([], VetOutput)
-    assert reply.payload.verdict == "REJECT" and reply.payload.win_payoff_ratio is None
+    # Zero means "no positive estimate"; SIZE turns it into no position (see test_engine).
+    assert reply.payload.verdict == "REJECT" and reply.payload.win_payoff_ratio == 0
 
 
-@pytest.mark.parametrize("ratio", [0, "0", -1, "-0.5"])
-def test_only_a_rejection_may_replace_a_non_positive_ratio(ratio):
-    base = VET_REJECT | {"win_probability": "0.6", "expected_return_fraction": "0.1"}
-    assert VetOutput.model_validate(base | {"win_payoff_ratio": ratio}).win_payoff_ratio is None
-    for verdict in ("PASS", "PASS_PARTIAL"):
-        # Sizing divides by this ratio, so a pass with an unusable one must fail closed.
-        with pytest.raises(ValueError, match="win_payoff_ratio"):
-            VetOutput.model_validate(base | {"verdict": verdict, "win_payoff_ratio": ratio})
+def test_model_output_decimals_are_numbers_without_free_text():
+    # A free string branch lets constrained decoders bypass numeric bounds entirely.
+    probability = output_schema(BookOutput)["properties"]["probability_yes"]
+    assert probability["anyOf"] == [
+        {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        {"type": "null"},
+    ]
+    vet = output_schema(VetOutput)["properties"]
+    assert vet["win_payoff_ratio"]["anyOf"][0] == {"type": "number", "minimum": 0.0}
+    # Recorded fixtures may still carry exact decimal text.
+    recorded = VetOutput.model_validate_json(
+        '{"verdict":"PASS","signal_priced_in":false,"uses_world_news":false,'
+        '"win_probability":"0.7","win_payoff_ratio":0,"expected_return_fraction":"0.1",'
+        '"evidence":[],"explanation":"x"}'
+    )
+    assert recorded.win_probability == Decimal("0.7") and recorded.win_payoff_ratio == 0
 
 
-def test_a_positive_ratio_and_null_are_untouched_for_a_rejection():
-    assert VetOutput.model_validate(VET_REJECT | {"win_payoff_ratio": "2"}).win_payoff_ratio == 2
-    assert VetOutput.model_validate(VET_REJECT).win_payoff_ratio is None
+def test_cited_schema_admits_only_supplied_identifiers():
+    from pydantic import ValidationError
+
+    from trading_team.domain import cited
+
+    scan = cited(ScanOutput, candidate_ids=["solana:A", "solana:B"], evidence=["e1", "e2"])
+    properties = output_schema(scan)["properties"]
+    assert properties["candidate_ids"]["items"] == {
+        "type": "string",
+        "enum": ["solana:A", "solana:B"],
+    }
+    assert properties["candidate_ids"]["maxItems"] == 10 and scan.__name__ == "ScanOutput"
+    with pytest.raises(ValidationError):
+        scan(candidate_ids=["solana:A"], evidence=["holder_count rose"], explanation="prose")
+    vet = cited(VetOutput, required="evidence", evidence=["e1"])
+    # One allowed value is still an enum, and at least one citation is required.
+    assert output_schema(vet)["properties"]["evidence"]["items"]["enum"] == ["e1"]
+    with pytest.raises(ValidationError):
+        vet.model_validate(
+            {
+                "verdict": "REJECT",
+                "signal_priced_in": False,
+                "uses_world_news": False,
+                "win_probability": None,
+                "win_payoff_ratio": None,
+                "expected_return_fraction": None,
+                "evidence": [],
+                "explanation": "nothing cited",
+            }
+        )

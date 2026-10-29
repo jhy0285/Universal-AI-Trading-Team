@@ -75,7 +75,7 @@ def create_app(settings: Settings | None = None, desk: Desk | None = None) -> Fa
 
     @asynccontextmanager
     async def lifespan(_app):
-        db.initialize()
+        db.initialize(settings.paper_initial_cash)
         desk.activate_config()
         yield
         await desk.close()

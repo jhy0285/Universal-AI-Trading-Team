@@ -28,6 +28,9 @@ from trading_team.storage import (
 
 D = Decimal
 STEP = D("0.000000001")
+# Marks come from the 5-minute RISK run; two intervals keep sizing available between runs
+# while a missed run still leaves the portfolio unpriced.
+MARK_MAX_AGE_SECONDS = 600
 
 
 class PaperBroker:
@@ -46,7 +49,7 @@ class PaperBroker:
             if (
                 p.last_price is None
                 or p.marked_at is None
-                or not 0 <= (now - p.marked_at).total_seconds() <= 300
+                or not 0 <= (now - p.marked_at).total_seconds() <= MARK_MAX_AGE_SECONDS
             ):
                 return None
             equity += p.quantity * p.last_price
