@@ -74,9 +74,12 @@ VET_TASK = (
     "missing data. Judge only what needs judgement: signal_priced_in (is the holder growth "
     "already reflected in price_change_h1_percent and derived.price_growth_fraction?), "
     "uses_world_news, and forecasts for a short holding period: win_probability, "
-    "win_payoff_ratio (average win / average loss) and expected_return_fraction. Paper fees are "
-    "max(0.45%, $0.95) per fill, paid on entry and exit. Forecasts are estimates, never observed "
-    "facts; use null when you cannot estimate. Cite evidence_id in evidence."
+    "win_payoff_ratio (average win / average loss) and expected_return_fraction, the expected "
+    "return BEFORE fees: Python subtracts the simulated round-trip fees itself, so do not deduct "
+    "them. Forecasts are estimates, never observed facts; use null when you cannot estimate. "
+    "verdict: PASS if your forecasts support an entry, REJECT if not. PASS_PARTIAL means a "
+    "required observation could not be verified; it blocks the entry, so do not use it for a "
+    "cautious pass. Cite evidence_id in evidence."
 )
 
 
