@@ -442,3 +442,21 @@ async def test_new_proposals_send_one_notice_and_change_nothing(db, settings, mo
     finally:
         await desk.close()
     assert messages == ["새 개선 제안 2건. 대시보드에서 검토하세요(자동 적용 없음)"]
+
+
+def test_snapshot_retention_cannot_cut_the_learning_window():
+    import math
+
+    from pydantic import ValidationError
+
+    from trading_team import learning
+    from trading_team.settings import LEARNING_SNAPSHOT_DAYS, Settings
+
+    needed = learning.LOOKBACK_DAYS + math.ceil(learning.PRIMARY_HORIZON / 86400)
+    assert LEARNING_SNAPSHOT_DAYS == needed
+    assert Settings(_env_file=None, snapshot_retention_days=0).snapshot_retention_days == 0
+    assert (
+        Settings(_env_file=None, snapshot_retention_days=needed).snapshot_retention_days == needed
+    )
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, snapshot_retention_days=needed - 1)

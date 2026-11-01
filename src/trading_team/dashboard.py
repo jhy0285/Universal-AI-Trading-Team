@@ -294,10 +294,15 @@ def main():
                 st.warning("합성 자료 계정입니다. 모델이나 시장에 대한 근거가 아닙니다.")
             st.subheader("개선 제안")
             items = learned.get("proposals", [])
+            statuses = sorted({x["status"] for x in items})
+            shown = st.multiselect(
+                "상태", statuses, default=["proposed"] if "proposed" in statuses else statuses
+            )
             st.dataframe(
                 [
                     {k: x[k] for k in ("status", "severity", "kind", "title", "action")}
                     for x in items
+                    if x["status"] in shown
                 ],
                 width="stretch",
             )
