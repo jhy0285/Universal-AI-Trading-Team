@@ -321,7 +321,6 @@ async def test_local_model_vet_reject_with_zero_estimates_completes(
     ]
     assert all(result["integrity"].values())
     properties = schemas["VetOutput"]["properties"]
-    digest = case.events[0].snapshots[0].digest
     # The model cites a short handle; the recorded analysis carries the snapshot hash.
     assert properties["evidence"]["items"]["enum"] == ["E1"]
     if evidence == "cited":

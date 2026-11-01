@@ -228,6 +228,7 @@ class Desk:
         if (
             live
             and attempt.status != "CANCELLED"
+            and attempt.final
             and self.supervisor.observe(attempt.role, attempt.status == "passed", attempt.status)
         ):
             self.runtime.restart_requested = True
@@ -576,7 +577,13 @@ class Desk:
                             if exc.code.startswith("GLOBAL_CONFIGURATION_CHANGED"):
                                 raise
                             # One candidate's model failure rejects that candidate only.
-                            self.record_agent(cycle_id, "VET", "failed", {"reason": exc.code})
+                            self.record_agent(
+                                cycle_id,
+                                "VET",
+                                "failed",
+                                {"reason": exc.code}
+                                | ({"detail": exc.detail} if exc.detail else {}),
+                            )
                             gate = GateResult(allowed=False, reason="VET_MODEL_" + exc.code)
                             self._record_decision(cycle_id, account_id, snapshot, gate, decisions)
                             continue
@@ -692,8 +699,13 @@ class Desk:
                 if isinstance(exc, (LLMError, DataError))
                 else "INPUT_OR_PROVENANCE_INVALID"
             )
+            detail = getattr(exc, "detail", "")
             self.record_agent(
-                cycle_id, "CHIEF", "blocked", {"reason": reason, "committed_orders": len(orders)}
+                cycle_id,
+                "CHIEF",
+                "blocked",
+                {"reason": reason, "committed_orders": len(orders)}
+                | ({"detail": detail} if detail else {}),
             )
             return self._finish_cycle(
                 cycle_id,
@@ -702,7 +714,8 @@ class Desk:
                     "reason": reason,
                     "orders": orders,
                     "decisions": decisions,
-                },
+                }
+                | ({"detail": detail} if detail else {}),
                 now,
             )
         except Exception:
@@ -1045,8 +1058,12 @@ class Desk:
                 clock(),
             )
         except (LLMError, DataError) as exc:
+            detail = getattr(exc, "detail", "")
             return self._finish_cycle(
-                cycle_id, {"status": "blocked", "reason": exc.code, "orders": []}, clock()
+                cycle_id,
+                {"status": "blocked", "reason": exc.code, "orders": []}
+                | ({"detail": detail} if detail else {}),
+                clock(),
             )
         except asyncio.CancelledError:
             self._finish_cycle(

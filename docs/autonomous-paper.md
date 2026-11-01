@@ -10,6 +10,7 @@
   모델은 합성 후보를 REJECT하므로 주문은 없습니다. PASS 경로의 실제 모델 호환은 미검증입니다. [검증 보고서](validation-report.md)를 참고하세요.
 - 시작 시 모델 점검·시장자료 수집·RISK·WM 점검을 실행합니다. 모델 준비 후 첫 SCAN을 시작합니다.
 - 시장자료는 60초, SCAN은 15분, RISK는 5분, BOOK과 WM seed는 15분, 마감 보고는 서울 23시에 실행합니다.
+- 학습 루프는 매시간 결정 결과를 측정하고 개선 제안을 갱신합니다. 규칙은 바꾸지 않습니다. [학습 루프](learning-loop.md)
 - 모델과 데이터가 복구되면 다음 작업에서 다시 평가합니다. Kill Switch와 감독 중단은 자동으로 해제하지 않습니다.
 - `AUTONOMOUS_ENABLED=false`는 예정된 신규 진입과 모델 보고를 중지합니다. 기존 포지션의 결정론적 RISK는 계속 실행합니다.
 
@@ -33,6 +34,7 @@ LOCAL_LLM_MODEL_URL=
 LOCAL_LLM_MODEL_SHA256=
 LOCAL_LLM_THREADS=3
 LOCAL_LLM_CONTEXT_SIZE=8192
+LLM_TIMEOUT_SECONDS=300
 AUTONOMOUS_ENABLED=true
 ```
 
