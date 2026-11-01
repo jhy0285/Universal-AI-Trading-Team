@@ -643,7 +643,10 @@ class Desk:
                     {"count": 0, "reason": "NO_VERIFIED_FRESH_CANDIDATES"},
                 )
             summary = {"orders": len(orders), "decisions": len(decisions), "paper_only": True}
-            if not recorded:
+            if not recorded and not orders:
+                # Nothing was filled: the facts are the report; no model usage per idle cycle.
+                self.record_agent(cycle_id, "CHIEF", "facts_only", summary)
+            elif not recorded:
                 try:
                     chief = await self.runtime.generate(
                         "CHIEF",

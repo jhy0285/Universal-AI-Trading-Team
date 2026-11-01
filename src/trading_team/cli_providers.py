@@ -14,6 +14,8 @@ from trading_team.cli_registry import CLI_PROFILES, resolve_executable
 from trading_team.llm_types import LLMError, Reply, T, output_schema
 from trading_team.settings import Settings
 
+CLAUDE_CLI_KEEP = {"CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"}
+
 
 def _pairs(pairs):
     result = {}
@@ -224,6 +226,14 @@ class CLIProvider:
                 "--json-schema",
                 schema_text,
             ]
+            # Started from a Claude Code terminal, the worker would pass on that session's
+            # runtime markers and turn this one-shot inference into a nested session.
+            # Credentials and provider selection stay.
+            for name in list(env):
+                if (
+                    name == "CLAUDECODE" or name.startswith("CLAUDE_CODE_")
+                ) and name not in CLAUDE_CLI_KEEP:
+                    env.pop(name)
             env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         elif kind in {"gemini_cli", "qwen_cli"}:
             subdir = directory / (".gemini" if kind == "gemini_cli" else ".qwen")
