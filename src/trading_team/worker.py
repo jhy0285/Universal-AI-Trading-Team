@@ -139,6 +139,10 @@ def build_scheduler(desk: Desk, leases: LeaseManager) -> AsyncIOScheduler:
     async def learn():
         # Read-mostly analysis; it proposes changes but never alters trading behaviour.
         result = await asyncio.to_thread(learning.review, desk.db, "main")
+        if result["created"]:
+            desk.notifier.send(
+                f"새 개선 제안 {len(result['created'])}건. 대시보드에서 검토하세요(자동 적용 없음)"
+            )
         return {
             "status": "reviewed",
             "decisions": result["report"]["funnel"]["decisions"],
