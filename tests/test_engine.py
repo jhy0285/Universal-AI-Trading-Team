@@ -326,6 +326,7 @@ async def test_local_model_vet_reject_with_zero_estimates_completes(
     if evidence == "cited":
         with db.transaction() as s:
             vet = s.scalars(select(AgentRecord).where(AgentRecord.role == "VET")).all()
+        digest = case.events[0].snapshots[0].digest
         assert json.loads(vet[-1].payload)["evidence"] == [digest]
     assert properties["evidence"]["minItems"] == 1
     for name in ("win_probability", "win_payoff_ratio", "expected_return_fraction"):
