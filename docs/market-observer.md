@@ -41,7 +41,7 @@ DexScreener가 제공하지 않는 원천 관측 시각, 보유자 이력, 큰 �
 | 보유자 이력 | 같은 pool의 자체 관측 중 현재보다 5–30분 앞선 가장 최근 값. 없으면 unknown이며 VET가 차단 |
 | 두 구간 | Jupiter 관측 시각까지의 연속된 5분 구간 두 개. 300건 한 페이지가 첫 구간 시작에 닿지 않으면 불완전으로 보고 unknown |
 | 큰 지갑 매도 | 위 10분 안에 최대 보유자 상위 20 지갑이 매도자(`tx_from_address`)로 나타나면 true. 잔고 감소만으로 판단하지 않음 |
-| 처리 예산 | 수집마다 유동성 1만 달러 이상인 Solana 자산 중 가장 유동성이 큰 pool 기준 상위 `MARKET_OBSERVER_MAX_ASSETS`개만 관측 |
+| 처리 예산 | 수집마다 유동성 1만 달러 이상인 Solana 자산을 유동성 순으로 최대 `MARKET_OBSERVER_MAX_ASSETS`의 3배까지 무료 보유자 조회로 먼저 검사. 최대 보유자 5% 초과·계약 미검증·조회 불가인 pool은 Jupiter 견적 없이 VET와 같은 사유로 SCAN 단계에서 기록하고, 통과한 pool 최대 `MARKET_OBSERVER_MAX_ASSETS`개만 견적 |
 | 큰 토큰 | token account 3만 개 또는 응답 10MB를 넘으면 보유자 조회를 중단하고 1시간 동안 재시도하지 않음. 보유자는 unknown |
 
 거래 구간·큰 지갑 매도는 SCAN이 평가하는 수집에서만 조회하고 429를 15초 뒤 두 번까지 재시도합니다. 1분 수집은 GeckoTerminal을 호출하지 않습니다.

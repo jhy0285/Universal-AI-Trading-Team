@@ -33,6 +33,7 @@ class Market:
         self.now, self.holders, self.trades, self.requests = T0, 2, [], []
         self.pair: dict = {}
         self.usd, self.tokens = D(50_000), D(50_000_000)
+        self.whale = 40_000  # 4% of supply; above 50_000 it breaches the 5% cap.
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -79,7 +80,7 @@ class Market:
             }
             result = {"context": {"slot": 500}, "value": value}
         elif body["method"] == "getProgramAccounts":
-            rows = [(POOL_KEY, 600_000), (WHALE_KEY, 40_000)]
+            rows = [(POOL_KEY, 600_000), (WHALE_KEY, self.whale)]
             rows += [(bytes([9, i]) + b"\x00" * 30, 10) for i in range(self.holders - 1)]
             encoded = [
                 base64.b64encode(owner + (amount * 10**6).to_bytes(8, "little")).decode()
@@ -137,7 +138,8 @@ async def observe(db, settings, market, client):
     data = PublicDataClient(db, client)
     observer = MarketObserver(settings, db, data, DexScreener(data), SolanaOnchain(settings, data))
     discovered = DexScreener.normalize(dex_pair(), market.now)
-    observed, notes = await observer.observe([discovered])
+    observed, notes, screened = await observer.observe([discovered])
+    assert screened == []
     PaperBroker(db).save_snapshot(observed[0])
     return observed[0], notes
 
@@ -273,11 +275,11 @@ async def test_observer_respects_budget_and_can_be_disabled(db, settings, market
         ).model_copy(update={"liquidity_usd": D(20_000 + i)})
         for i in range(3)
     ]
-    assert [x.liquidity_usd for x in observer.select([low, *ranked])] == [D(20_002)]
+    assert [x.liquidity_usd for x in observer.select([low, *ranked], 1)] == [D(20_002)]
     off = MarketObserver(
         settings.model_copy(update={"market_observer_enabled": False}), db, None, None, None
     )
-    assert await off.observe([low]) == ([low], [])
+    assert await off.observe([low]) == ([low], [], [])
 
 
 async def test_desk_collects_observed_pools_and_risk_exits_on_observed_bids(db, settings, market):
@@ -467,3 +469,32 @@ async def test_data_rejects_are_decided_before_any_model_call(db, settings, mark
     assert [x["reason"] for x in result["decisions"]] == ["HOLDER_HISTORY_UNAVAILABLE"]
     # Only the probe and the factual CHIEF report used the model; no SCAN or VET time was spent.
     assert model.schemas.count("ScanOutput") == 1 and model.schemas.count("VetOutput") == 1
+
+
+async def test_screen_spends_quotes_only_on_pools_vet_would_not_reject(db, settings, market):
+    """A concentrated pool is screened with VET's reason, before any rate-limited quote."""
+    market.whale = 80_000  # 8% of supply in one wallet.
+    async with httpx.AsyncClient(transport=httpx.MockTransport(market.handle)) as client:
+        data = PublicDataClient(db, client)
+        observer = MarketObserver(
+            settings, db, data, DexScreener(data), SolanaOnchain(settings, data)
+        )
+        observed, _notes, screened = await observer.observe(
+            [DexScreener.normalize(dex_pair(), market.now)]
+        )
+    assert screened == [
+        {"asset_id": f"solana:{MINT}", "pair_id": POOL, "reason": "CONCENTRATION_OVER_5_PERCENT"}
+    ]
+    assert observed[0].observed_at is None and observed[0].buy_quote is None
+    assert not [r for r in market.requests if r.url.host == "api.jup.ag"]
+
+
+async def test_cycle_records_the_screen_reason_not_a_stale_price(db, settings, market):
+    market.whale = 80_000
+    model = DeskModel()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(market.handle)) as client:
+        desk = await live_desk(db, settings, market, client, model, history=True)
+        result = await desk.run_cycle("main", "screened")
+        await desk.close()
+    assert [x["reason"] for x in result["decisions"]] == ["CONCENTRATION_OVER_5_PERCENT"]
+    assert model.schemas.count("ScanOutput") == 1  # The probe only; no SCAN or VET call.

@@ -306,7 +306,9 @@ class Desk:
                         discovered.setdefault((snapshot.asset_id, snapshot.pair_id), snapshot)
                 except DataError as exc:
                     errors.append({"query": query, "reason": exc.code})
-        observed, notes = await self.observer.observe(list(discovered.values()), trades=trades)
+        observed, notes, screened = await self.observer.observe(
+            list(discovered.values()), trades=trades
+        )
         errors.extend(notes)
         try:
             observed = await self.market_feed.enrich(observed)
@@ -318,6 +320,7 @@ class Desk:
         return {
             "snapshots": [x.model_dump(mode="json") | {"snapshot_id": x.digest} for x in results],
             "errors": errors,
+            "screened": screened,
             "count": len(results),
         }
 
@@ -475,8 +478,13 @@ class Desk:
         orders = []
         decisions = []
         try:
+            screened = {}
             if snapshots is None:
-                await self.collect()
+                collected = await self.collect()
+                # Pools the on-chain screen rejected keep VET's reason, not "no fresh price".
+                screened = {
+                    (x["asset_id"], x["pair_id"]): x["reason"] for x in collected["screened"]
+                }
                 snapshots = self.latest_snapshots()
             snapshots = list(snapshots)
             with self.db.transaction() as s:
@@ -487,7 +495,12 @@ class Desk:
                 self.broker.save_snapshot(snapshot)
             eligible = []
             for snapshot in snapshots:
-                gate = scan_gate(snapshot, clock(), self.settings.market_max_age_seconds)
+                reason = screened.get((snapshot.asset_id, snapshot.pair_id))
+                gate = (
+                    GateResult(allowed=False, reason=reason, details={"stage": "observer_screen"})
+                    if reason
+                    else scan_gate(snapshot, clock(), self.settings.market_max_age_seconds)
+                )
                 if gate.allowed:
                     # VET's model-free checks first: cheapest first, no model time on candidates
                     # that the observations already reject.

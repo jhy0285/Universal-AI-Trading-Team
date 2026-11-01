@@ -68,6 +68,18 @@ LLM_CLI_EXECUTABLE=
 LLM_CLI_COMMAND=[]
 ```
 
+2026-11-01에 검증한 값은 다음과 같습니다. 같은 실제 관측 9건에서 4역할 probe 12초, SCAN 8초, VET 1회 4~7초였습니다.
+
+```dotenv
+LLM_PROVIDER=claude_cli
+LLM_MODEL=claude-sonnet-5-5
+```
+
+- 호출은 로그인한 계정의 사용량을 씁니다. 모델 호출은 SCAN 자료 검사를 통과한 후보가 있을 때(SCAN 1회 + 후보당 VET 1회), 하루 한 번의 probe, 체결이 있는 사이클의 CHIEF, 마감 보고뿐입니다.
+- Claude Code 터미널 안에서 worker를 시작해도 동작하도록, 앱은 자식 호출에서 부모 세션 표시(`CLAUDECODE`, `CLAUDE_CODE_*`)를 제거합니다.
+  `CLAUDE_CODE_OAUTH_TOKEN`과 Bedrock·Vertex 선택 변수는 그대로 전달합니다.
+- 비용 단가를 모르는 구독 사용량은 `cli_usage_unknown_billing`으로 기록하며 API 요금으로 환산하지 않습니다.
+
 Gemini를 사용할 때는 전역 Provider를 바꿉니다.
 
 ```dotenv
