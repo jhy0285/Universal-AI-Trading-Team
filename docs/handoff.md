@@ -86,6 +86,9 @@ PostgreSQL로 테스트하려면 임시 클러스터를 띄워 `UAT_TEST_DATABAS
 - **SQLite 트랜잭션은 모두 `BEGIN IMMEDIATE`입니다.** 긴 분석은 짧은 트랜잭션으로 나누세요(`learning.gate_regret` 참고). 아니면 수집이 최대 30초 기다립니다.
 - **Claude Code 세션 안에서 `claude_cli`를 시험할 때는 깨끗한 환경을 쓰세요.** 앱은 `CLAUDECODE`·`CLAUDE_CODE_*`를 지우지만 세션의 `ANTHROPIC_BASE_URL` 같은 값은 그대로 전달합니다.
   `env -i HOME=… PATH=… HTTPS_PROXY=… NODE_EXTRA_CA_CERTS=… SSL_CERT_FILE=…`처럼 로그인·프록시에 필요한 값만 넘겨 실행했습니다.
+- **Provider를 바꿀 때 `.env`의 `LLM_BASE_URL`을 비우세요.** `claude_cli`는 이 값을 `ANTHROPIC_BASE_URL`로 덮어씁니다. 로컬 모델 시험 뒤 `http://127.0.0.1:8081/v1`이 남아 있으면
+  Claude CLI가 꺼진 서버로 접속해 출력 없이 `CLI_TIMEOUT`·`CLI_EXEC_FAILED`가 납니다(2026-11-02에 겪음. 인증과 네트워크는 정상이었음).
+  앱은 자식 CLI의 stderr를 일부러 숨기므로 `.venv/bin/python scripts/debug_cli_provider.py`로 앱이 만드는 **정확한 명령**을 직접 실행해 종료 상태와 출력을 보세요(경고와 환경 변수 *이름*만 출력).
 - **VET의 기대수익은 수수료 전 값입니다.** 게이트가 왕복 수수료를 직접 뺍니다. 지시문에 수수료를 언급하면 모델이 미리 빼서 두 번 빠집니다(2026-11-01 발견·수정).
 - **프로세스를 이름으로 찾아 죽이지 마세요.** `pkill -f`·`pgrep -f`는 물론 `/proc/*/cmdline` 스캔도, 명령줄에 같은 문자열(스크립트 본문 포함)이 있으면 자기 셸을 죽입니다(이 작업에서 4번 겪음).
   서버는 시작할 때 PID를 저장해 두거나, 실행 파일 경로 `os.readlink(f"/proc/{pid}/exe")`가 `.../llama-server`로 끝나는지로 찾으세요.

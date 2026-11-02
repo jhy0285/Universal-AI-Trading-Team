@@ -83,6 +83,8 @@ Claude Code 클라우드 세션 안에서 시험할 때는 부모 세션 변수�
 - 클라우드 공유 IP에서 Jupiter 키 없는 한도(약 10초당 5회)와 GeckoTerminal(30회/분)이 다른 사용자 때문에 자주 찬다.
 - 로컬 CPU 모델은 느리다(8B VET 1회 약 90초). LLM_TIMEOUT_SECONDS=300이 최대다.
 - llama.cpp는 JSON 스키마를 디코딩 문법으로만 쓴다. 규칙은 task 문장이나 enum으로 표현하라.
+- Provider를 바꾸면 .env의 LLM_BASE_URL을 비워라. claude_cli는 이것을 ANTHROPIC_BASE_URL로 덮어써서, 로컬 모델 설정이 남아 있으면 Claude CLI가 출력 없이 멈춘다.
+  멈추면 .venv/bin/python scripts/debug_cli_provider.py 로 앱이 만드는 정확한 명령을 직접 실행해 보라(위 env -i 예시는 그대로 동작함을 2026-11-02에 확인).
 - VET 기대수익은 수수료 전 값이다. 지시문을 고칠 때 수수료를 모델이 빼게 만들지 마라(이중 차감).
 - 사용자 메시지는 항상 유효한 JSON으로 유지하라(교정 피드백 키는 validation_feedback).
 
