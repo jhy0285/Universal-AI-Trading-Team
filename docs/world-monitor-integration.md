@@ -106,3 +106,22 @@ Phase 3에서 고정 버전의 로컬 stack을 준비하고 세 endpoint의 유�
 [Python SDK](https://github.com/koala73/worldmonitor/tree/c0f783620dcdae713a6d28c239844c12311e2bf6/sdk/python),
 [MCP reference](https://github.com/koala73/worldmonitor/blob/c0f783620dcdae713a6d28c239844c12311e2bf6/docs/mcp-tools-reference.mdx),
 [Prediction OpenAPI](https://github.com/koala73/worldmonitor/blob/c0f783620dcdae713a6d28c239844c12311e2bf6/docs/api/PredictionService.openapi.json).
+
+## 교차 신호가 0건인 이유 — 2026-11-02, upstream 코드 읽기
+
+고정 revision `c0f78362`의 소스를 읽어 정리했습니다. **실행으로 검증하지는 못했습니다**(아래 "확인하지 못한 것").
+
+1. **입력이 23개 중 2개뿐입니다.** `scripts/seed-cross-source-signals.mjs:18`의 `SOURCE_KEYS`는 열 감시, GPS 교란, 군사 급증, 시위, 주식·원자재, 사이버, 해운, 제재, 방사선, 정전, 산불, 난민, 예측 악화, GDELT 논조, 기상, 위험 점수, 물리적 괴리 등 Redis 키 23개를 읽습니다.
+   우리가 돌리는 seed 5개 중 이 목록에 있는 키를 채우는 것은 `seed-earthquakes`(`seismology:earthquakes:v1`)와 `seed-regulatory-actions`(`regulatory:actions:v1`) 둘뿐입니다. fear/greed와 prediction markets seed는 이 집계기의 입력이 아닙니다.
+2. **우리 입력으로 가능한 신호는 두 가지입니다.** 지진 규모 6.5 이상이 24시간 안에 있을 때(`:558`), 규제 조치 중 `high`·`medium` 등급이 48시간 안에 있을 때(최대 3건, `:953`).
+   `high`는 제목·설명에 `enforcement`, `charges`, `fine`, `ban`, `suspension` 같은 단어가 있으면 붙습니다(`seed-regulatory-actions.mjs:16`). 흔한 단어라 신호가 나지 않는 것은 아래 "확인하지 못한 것"으로 남습니다.
+3. **신호가 0건이면 아무것도 발행하지 않습니다.** 이 seed는 `declareRecords`를 쓰는 계약 모드이고 호출 옵션에 `zeroIsValid`가 없습니다(파일 안 0건). `runSeed`의 기본값은 `zeroIsValid = false`(`_seed-utils.mjs:2557`)라
+   기록 0건은 RETRY로 처리되어 발행을 건너뛰고 기존 last-good만 보존합니다(`:2932`). last-good이 없으면 canonical 키 `intelligence:cross-source-signals:v1`이 생기지 않아 `list-cross-source-signals`가 503이 되고, 앱은 degraded로 BOOK을 멈춥니다.
+   `validate()`(`:1178`)는 빈 배열을 허용하지만 발행 여부와는 별개입니다.
+
+**의미.** BOOK이 멈춘 것은 앱의 결함이 아니라 (a) 집계기에 입력을 2/23만 주고 (b) 그 두 입력이 드문 사건에 의존하며 (c) 빈 결과는 발행하지 않는 upstream 설계의 결과입니다. 빈 자료를 READY로 만들지 않는 앱의 원칙과는 일치합니다.
+
+**확인하지 못한 것.** 같은 seed를 로컬 Redis에서 실행하면 스크립트가 `Found N/23 source keys populated`와 `Extracted K raw signals`를 출력합니다(`:1133`, `:1157`).
+이 컨테이너에는 `redis-server`가 있고 REST 프록시에는 `redis` 클라이언트만 필요해서 시도했지만, 제3자 저장소의 코드 실행이 권한 분류기에 막혀 중단했습니다.
+따라서 `regulatory:actions:v1`에 최근 `high` 항목이 있는데도 0건인 이유(피드 접근, 48시간 창, `publishedAt` 파싱 중 무엇인지)는 모릅니다. 사용자가 승인한 환경에서 설치 후 `node scripts/seed-cross-source-signals.mjs`의 위 두 줄을 확인하면 가려집니다.
+
