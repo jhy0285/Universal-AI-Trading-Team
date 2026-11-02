@@ -15,16 +15,20 @@
    docs/implementation-decisions.md(원문에 없는 실행 의미), docs/learning-loop.md(학습 루프)
 
 ## 현재 상태 (2026-11-02)
-- main: PR #1까지 병합됨(무료 시장 관측, 핸들 인용, 실패 진단·교정 재시도, 학습 루프, 인수인계 문서).
-- PR #2 (브랜치 claude/nice-einstein-fz8wua → main): 열림, CI 통과, 충돌 없음. 내용:
-  Claude Sonnet 5.5 판단 모델 연결(`LLM_PROVIDER=claude_cli`, `LLM_MODEL=claude-sonnet-5-5`),
-  VET 기대수익 수수료 이중 차감 수정, VET 판정 의미 정의, 보유자 선검사(Jupiter 견적 전 집중도·계약 검사),
-  Claude Code 부모 세션 변수 제거, 체결 없는 사이클의 CHIEF 모델 호출 생략, 학습 제안 알림, 보존 1~7일 거부, 문서.
+- main: PR #1·PR #2까지 병합됨(2026-11-02). PR #1: 무료 시장 관측, 핸들 인용, 실패 진단·교정 재시도, 학습 루프, 인수인계 문서.
+  PR #2: Claude Sonnet 5.5 판단 모델 연결(`LLM_PROVIDER=claude_cli`, `LLM_MODEL=claude-sonnet-5-5`), VET 기대수익 수수료 이중 차감 수정,
+  VET 판정 의미 정의, 보유자 선검사(Jupiter 견적 전 집중도·계약 검사), Claude Code 부모 세션 변수 제거,
+  체결 없는 사이클의 CHIEF 모델 호출 생략, 학습 제안 알림, 보존 1~7일 거부, 문서.
+- 브랜치: claude/nice-einstein-fz8wua는 병합돼 삭제해도 된다(원격 삭제는 세션 권한에서 403, 사용자가 웹에서). claude/beautiful-faraday-wwthsb에는
+  이후 커밋(scripts/debug_cli_provider.py, 90분 실행 기록)이 있다. PR은 사용자가 요청할 때만 만든다.
 - 테스트: pytest 255건, SQLite·PostgreSQL 16 모두 통과.
 - 판단 모델: 로컬 Qwen3-4B·8B는 VET를 신뢰할 수 없음(거의 항상 "이미 반영", 추정치 고정·null).
   Claude Sonnet 5.5는 같은 실제 관측 9건에 후보별 근거 있는 판단(모두 REJECT, 기대수익 음수).
 - 합성 강신호(10,000 USD)에서는 Sonnet PASS → 600 USD 모의 체결 → RISK 청산 +54.33 USD까지 확인.
-- 실데이터: 자동 운영 4회(23·90·75분 등) 동안 실데이터 모의 체결 0건. 막는 것은 모델이 아니라 후보 자료다.
+- 실데이터: 자동 운영 5회(23·90·75분, 2026-11-02의 10,000 USD 90분 등) 동안 실데이터 모의 체결 0건. 막는 것은 모델이 아니라 후보 자료와 관측 범위다.
+  관측 풀 3개 90분: 결정 223건 중 88%가 관측되지 않은 풀, 관측된 풀 8개는 거래 구간 부족·집중도·가격 선행으로 차단, 모델 호출 0건.
+  관측 풀 6개 125분: 관측 풀 15개, SCAN 5·VET 8회가 모두 첫 응답 통과. Sonnet이 4개 풀을 승률 0.30~0.42, 기대수익 −2~−5%로 모두 REJECT. 체결 0.
+  6풀에서는 1분 수집이 60초를 넘어 120분 중 30회 건너뛴다(관측 폭과 수집 주기의 균형이 다음 과제).
   주된 차단 사유: 최대 보유자 5% 초과, 보유자보다 가격이 빨리 오름, 어린 pair 유동성 감소, 상위 보유자 매도,
   GeckoTerminal 429로 거래 구간 없음(클라우드 공유 IP).
 - 1,000 USD 원문 자금에서는 주문 60 USD, 최소 수수료 0.95 USD로 왕복 약 3.2%가 들어 진입이 매우 드물다.
@@ -40,8 +44,7 @@
 - .env·토큰·프록시 주소를 출력하거나 파일·커밋에 남기지 마라.
 
 ## 할 일 (우선순위)
-1. PR #2 상태 확인. 병합됐으면 최신 main에서 새 브랜치로 시작한다. 아직 열려 있으면 그 브랜치에서 이어가되,
-   병합 여부는 사용자에게 묻는다(직접 병합하지 마라). main이 앞서 나가면 rebase·force push 대신 main을 merge한다.
+1. 최신 main에서 시작한다(PR #1·#2는 병합됨). main이 앞서 나가면 rebase·force push 대신 main을 merge한다. 병합은 사용자가 승인했을 때만 한다.
 2. 실데이터 모의 체결 1건 확인(인수인계 완료 기준).
    - Sonnet 전역 모델로 worker를 장시간(가능하면 24시간) 돌린다. PAPER_INITIAL_CASH=10000을 쓸지는 사용자와 정한다.
    - 사용자 PC처럼 공유되지 않은 IP에서 돌리면 GeckoTerminal 429가 줄어든다. 무료 JUPITER_API_KEY가 있으면
@@ -83,6 +86,8 @@ Claude Code 클라우드 세션 안에서 시험할 때는 부모 세션 변수�
 - 클라우드 공유 IP에서 Jupiter 키 없는 한도(약 10초당 5회)와 GeckoTerminal(30회/분)이 다른 사용자 때문에 자주 찬다.
 - 로컬 CPU 모델은 느리다(8B VET 1회 약 90초). LLM_TIMEOUT_SECONDS=300이 최대다.
 - llama.cpp는 JSON 스키마를 디코딩 문법으로만 쓴다. 규칙은 task 문장이나 enum으로 표현하라.
+- Provider를 바꾸면 .env의 LLM_BASE_URL을 비워라. claude_cli는 이것을 ANTHROPIC_BASE_URL로 덮어써서, 로컬 모델 설정이 남아 있으면 Claude CLI가 출력 없이 멈춘다.
+  멈추면 .venv/bin/python scripts/debug_cli_provider.py 로 앱이 만드는 정확한 명령을 직접 실행해 보라(위 env -i 예시는 그대로 동작함을 2026-11-02에 확인).
 - VET 기대수익은 수수료 전 값이다. 지시문을 고칠 때 수수료를 모델이 빼게 만들지 마라(이중 차감).
 - 사용자 메시지는 항상 유효한 JSON으로 유지하라(교정 피드백 키는 validation_feedback).
 

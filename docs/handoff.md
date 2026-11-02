@@ -31,18 +31,23 @@
 | VET 판단 품질 | 4B·8B 신뢰 불가 / Claude Sonnet 5.5 동작 | 로컬은 `signal_priced_in`을 거의 항상 true. Sonnet은 같은 9건에 후보별 근거·추정치 |
 | 모델이 PASS를 낸 뒤 주문까지 | Sonnet으로 합성 자료에서 확인 | 강신호 합성 사례에서 PASS → 600 USD 체결 → RISK 청산. 실데이터 체결은 아직 없음 |
 | BOOK(예측시장) | 대기 | World Monitor 교차 신호 0개. 실제 BOOK 진입 미검증 |
-| 장기 무중단 운영 | 미검증 | 최장 90분 연속 실행 기록 |
+| 장기 무중단 운영 | 미검증 | 최장 약 90분(중간에 컨테이너 재시작이 있었고 같은 장부로 수동 조치 없이 재개). 2026-11-02 실데이터 90분: 결정 223건, 체결 0, 88%가 관측되지 않은 풀 |
 
 ## 이어서 할 일 (우선순위)
 
 1. **실데이터 모의 체결 1건을 확인합니다.** 판단 모델은 Claude Sonnet 5.5(`claude_cli`)로 정했습니다([CLI 호환](cli-providers.md)). 후보별 추정치와 합성 자료의 PASS → 체결은 확인했습니다.
    남은 완료 기준은 결정론적 게이트를 통과한 **실데이터** 모의 체결 1건입니다. 1,000 USD에서는 왕복 수수료가 약 3.2%라 진입이 드뭅니다([자동 페이퍼](autonomous-paper.md)).
    후보가 모델에 닿는 비율은 보유자 선검사로 높였습니다. 더 넓히려면 무료 Jupiter 키와 함께 `MARKET_OBSERVER_MAX_ASSETS`를 올리세요.
+   2026-11-02의 10,000 USD 실행에서도 체결은 0건이었습니다. 관측 풀 3개 90분은 모델 호출 0건(결정의 88%가 관측되지 않은 풀)이었고,
+   `MARKET_OBSERVER_MAX_ASSETS=6` 125분은 관측 풀 15개, 모델 호출 SCAN 5·VET 8로 후보가 처음 모델에 닿았지만 Sonnet이 4개 풀을 모두 음의 기대수익으로 REJECT했습니다.
+   이제 병목은 후보의 질과 모델 판단입니다. 다음 시험: 관측 풀 8~10 + 무료 Jupiter 키, 공유되지 않은 IP에서 더 긴 실행(6풀에서는 1분 수집이 60초를 넘어 25% 건너뜀).
 2. **worker를 24시간 이상 연속 실행해 점검합니다.** 저장량(14일 보존), lease, 타임아웃, 모델 지연, 학습 루프 제안이 쌓이는 양을 봅니다.
 3. **학습 루프의 제안을 실제 데이터로 읽습니다.** 표본(24h 가격 30건·자산 5개, 확정 20건)이 쌓이기 전에는 결론을 내지 마세요. 임계값을 바꾸려면 반드시 재생으로 먼저 시험하고 정책 버전을 올립니다.
-4. **BOOK을 살립니다.** World Monitor 교차 신호가 0개인 이유(upstream seed)를 조사하세요([World Monitor](world-monitor-integration.md)).
+4. **BOOK을 살립니다.** 원인 사슬은 upstream 코드 읽기로 정리했습니다([World Monitor](world-monitor-integration.md)): 집계기 입력 23개 중 2개만 채움 → 신호는 드문 사건에 의존 → 0건이면 발행하지 않음 → 503 → BOOK 대기.
+   남은 일은 실행 확인입니다. 승인된 환경에서 `node scripts/seed-cross-source-signals.mjs` 로그의 `Found N/23`·`Extracted K`를 보고, 규제 `high` 항목이 있는데 0건인 이유를 가리세요. 이 컨테이너는 Node 22·Docker 없음이고 제3자 코드 실행은 권한이 막았습니다.
 5. **작은 보강(완료):** 새 개선 제안 알림, 보존 1~7일 거부(학습 창 보호), 대시보드 제안 상태 필터.
-6. **정리:** `claude/beautiful-faraday-wwthsb`는 병합됐습니다. `claude/nice-einstein-fz8wua`는 이후 작업이 PR로 다시 올라가 있습니다.
+6. **정리:** PR #1·#2는 병합됐습니다. `claude/nice-einstein-fz8wua`는 삭제해도 됩니다(이 세션의 git 권한으로는 원격 삭제가 403으로 거부되어 웹에서 지워야 합니다).
+   `claude/beautiful-faraday-wwthsb`에는 2026-11-02 후속 커밋(CLI 진단 스크립트, 90분 실데이터 실행 기록)이 있으며 PR은 사용자가 요청할 때 만듭니다.
 
 ## 시작하는 법
 
@@ -86,6 +91,9 @@ PostgreSQL로 테스트하려면 임시 클러스터를 띄워 `UAT_TEST_DATABAS
 - **SQLite 트랜잭션은 모두 `BEGIN IMMEDIATE`입니다.** 긴 분석은 짧은 트랜잭션으로 나누세요(`learning.gate_regret` 참고). 아니면 수집이 최대 30초 기다립니다.
 - **Claude Code 세션 안에서 `claude_cli`를 시험할 때는 깨끗한 환경을 쓰세요.** 앱은 `CLAUDECODE`·`CLAUDE_CODE_*`를 지우지만 세션의 `ANTHROPIC_BASE_URL` 같은 값은 그대로 전달합니다.
   `env -i HOME=… PATH=… HTTPS_PROXY=… NODE_EXTRA_CA_CERTS=… SSL_CERT_FILE=…`처럼 로그인·프록시에 필요한 값만 넘겨 실행했습니다.
+- **Provider를 바꿀 때 `.env`의 `LLM_BASE_URL`을 비우세요.** `claude_cli`는 이 값을 `ANTHROPIC_BASE_URL`로 덮어씁니다. 로컬 모델 시험 뒤 `http://127.0.0.1:8081/v1`이 남아 있으면
+  Claude CLI가 꺼진 서버로 접속해 출력 없이 `CLI_TIMEOUT`·`CLI_EXEC_FAILED`가 납니다(2026-11-02에 겪음. 인증과 네트워크는 정상이었음).
+  앱은 자식 CLI의 stderr를 일부러 숨기므로 `.venv/bin/python scripts/debug_cli_provider.py`로 앱이 만드는 **정확한 명령**을 직접 실행해 종료 상태와 출력을 보세요(경고와 환경 변수 *이름*만 출력).
 - **VET의 기대수익은 수수료 전 값입니다.** 게이트가 왕복 수수료를 직접 뺍니다. 지시문에 수수료를 언급하면 모델이 미리 빼서 두 번 빠집니다(2026-11-01 발견·수정).
 - **프로세스를 이름으로 찾아 죽이지 마세요.** `pkill -f`·`pgrep -f`는 물론 `/proc/*/cmdline` 스캔도, 명령줄에 같은 문자열(스크립트 본문 포함)이 있으면 자기 셸을 죽입니다(이 작업에서 4번 겪음).
   서버는 시작할 때 PID를 저장해 두거나, 실행 파일 경로 `os.readlink(f"/proc/{pid}/exe")`가 `.../llama-server`로 끝나는지로 찾으세요.
