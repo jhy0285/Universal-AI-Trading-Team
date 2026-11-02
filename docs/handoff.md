@@ -1,12 +1,12 @@
 # 인수인계
 
 이 문서만 읽어도 이어서 작업할 수 있도록 현재 상태, 검증 범위, 다음 할 일, 함정, 바꾸면 안 되는 결정을 모았습니다.
-세부 근거는 [검증 보고서](validation-report.md)에 날짜별로 있습니다. 이 문서의 수치는 2026-10-29 기준입니다.
+새 AI 세션은 [시작 프롬프트](next-session-prompt.md)를 첫 메시지로 붙여 넣어 시작하세요. 세부 근거는 [검증 보고서](validation-report.md)에 날짜별로 있습니다. 이 문서의 수치는 2026-11-01 기준입니다.
 
 ## 한 줄 요약
 
 **단일 LLM으로 판단하고 결정론적 Python이 집행하는 PAPER ONLY 모의 트레이딩 시스템**입니다. 수집·SCAN·VET·모의 체결·RISK·정산·측정이 자동으로 끝까지 돌지만,
-**지금 쓰는 소형 로컬 모델의 VET 판단이 신뢰할 수 없어 진입은 아직 한 번도 없습니다.** 가장 큰 남은 일은 판단 품질입니다.
+**소형 로컬 모델은 VET 판단을 신뢰할 수 없고, Claude Sonnet 5.5(`claude_cli`)는 후보별 근거 있는 판단을 냅니다.** 실데이터 모의 체결은 아직 없으며, 막는 것은 후보의 자료(집중도·가격 선행)입니다.
 
 ## 절대 규칙
 
@@ -28,21 +28,21 @@
 | 무료 시장 관측([observer](market-observer.md)) | 실데이터로 동작 | 풀 3개씩 보유자·집중도·계약·거래 구간·매수 호가 채움. 이전 값은 5~30분 뒤 두 번째 관측부터 |
 | VET `LLM_SCHEMA_INVALID` | 원인 확정·수정 | 거절 시 `win_payoff_ratio: 0`을 쓰는 출력. 비율 0 허용 + SIZE 0 |
 | 학습 루프([learning-loop](learning-loop.md)) | 구현·합성 자료로 검증 | 실제 진입 데이터로는 검증 못 함(진입 0건) |
-| **VET 판단 품질** | **신뢰 불가** | 4B·8B 모두 `signal_priced_in`을 거의 항상 true로 답하고 추정치가 근거와 무관 |
-| 모델이 PASS를 낸 뒤 주문까지 | 실제 모델로 미검증 | 합성 재생은 모두 REJECT. PASS 형태 숫자는 디코딩·검증만 통과 확인 |
+| VET 판단 품질 | 4B·8B 신뢰 불가 / Claude Sonnet 5.5 동작 | 로컬은 `signal_priced_in`을 거의 항상 true. Sonnet은 같은 9건에 후보별 근거·추정치 |
+| 모델이 PASS를 낸 뒤 주문까지 | Sonnet으로 합성 자료에서 확인 | 강신호 합성 사례에서 PASS → 600 USD 체결 → RISK 청산. 실데이터 체결은 아직 없음 |
 | BOOK(예측시장) | 대기 | World Monitor 교차 신호 0개. 실제 BOOK 진입 미검증 |
-| 장기 무중단 운영 | 미검증 | 최장 45분 연속 실행 기록 |
+| 장기 무중단 운영 | 미검증 | 최장 90분 연속 실행 기록 |
 
 ## 이어서 할 일 (우선순위)
 
-1. **판단 품질이 되는 전역 모델을 정합니다.** 4B·8B 로컬 모델로는 게이트가 모든 진입을 막습니다.
-   API 모델이나 CLI Provider를 `LLM_PROVIDER`로 선택하고(키가 필요하면 사용자에게 요청), 같은 관측으로 `replay --use-model`을 돌려 비교하세요(새 계정으로 순차 실행, `Model Comparison` 화면).
-   완료 기준: 서로 다른 후보에 서로 다른 추정치가 나오고, 근거가 있는 후보에서 PASS가 나오며, 결정론적 게이트를 통과한 모의 체결이 최소 1건 기록됨.
+1. **실데이터 모의 체결 1건을 확인합니다.** 판단 모델은 Claude Sonnet 5.5(`claude_cli`)로 정했습니다([CLI 호환](cli-providers.md)). 후보별 추정치와 합성 자료의 PASS → 체결은 확인했습니다.
+   남은 완료 기준은 결정론적 게이트를 통과한 **실데이터** 모의 체결 1건입니다. 1,000 USD에서는 왕복 수수료가 약 3.2%라 진입이 드뭅니다([자동 페이퍼](autonomous-paper.md)).
+   후보가 모델에 닿는 비율은 보유자 선검사로 높였습니다. 더 넓히려면 무료 Jupiter 키와 함께 `MARKET_OBSERVER_MAX_ASSETS`를 올리세요.
 2. **worker를 24시간 이상 연속 실행해 점검합니다.** 저장량(14일 보존), lease, 타임아웃, 모델 지연, 학습 루프 제안이 쌓이는 양을 봅니다.
 3. **학습 루프의 제안을 실제 데이터로 읽습니다.** 표본(24h 가격 30건·자산 5개, 확정 20건)이 쌓이기 전에는 결론을 내지 마세요. 임계값을 바꾸려면 반드시 재생으로 먼저 시험하고 정책 버전을 올립니다.
 4. **BOOK을 살립니다.** World Monitor 교차 신호가 0개인 이유(upstream seed)를 조사하세요([World Monitor](world-monitor-integration.md)).
-5. **작은 보강:** 새 개선 제안이 생길 때 `notify.py`로 알림, 학습 분석 창(7일)과 스냅샷 보존(14일)의 상호작용 문서화, 대시보드에서 제안 필터.
-6. **정리:** `main`에 병합된 브랜치(`claude/beautiful-faraday-wwthsb`, `claude/nice-einstein-fz8wua`)는 삭제해도 됩니다.
+5. **작은 보강(완료):** 새 개선 제안 알림, 보존 1~7일 거부(학습 창 보호), 대시보드 제안 상태 필터.
+6. **정리:** `claude/beautiful-faraday-wwthsb`는 병합됐습니다. `claude/nice-einstein-fz8wua`는 이후 작업이 PR로 다시 올라가 있습니다.
 
 ## 시작하는 법
 
@@ -84,6 +84,9 @@ PostgreSQL로 테스트하려면 임시 클러스터를 띄워 `UAT_TEST_DATABAS
 - **CPU 모델은 느립니다.** 이 컨테이너(4코어, 3스레드)에서 콜드 800토큰 프롬프트가 120초를 넘겨 유일한 재시도를 소진했습니다. 로컬 모델은 `LLM_TIMEOUT_SECONDS=300`을 쓰세요(최대값).
 - **사용자 메시지는 항상 유효한 JSON으로 유지하세요.** 테스트 더블과 일부 소비자가 `json.loads(messages[-1])`을 합니다. 교정 재시도 피드백은 `validation_feedback` 키입니다. 이어 붙이면 사유가 `INPUT_OR_PROVENANCE_INVALID`로 바뀝니다.
 - **SQLite 트랜잭션은 모두 `BEGIN IMMEDIATE`입니다.** 긴 분석은 짧은 트랜잭션으로 나누세요(`learning.gate_regret` 참고). 아니면 수집이 최대 30초 기다립니다.
+- **Claude Code 세션 안에서 `claude_cli`를 시험할 때는 깨끗한 환경을 쓰세요.** 앱은 `CLAUDECODE`·`CLAUDE_CODE_*`를 지우지만 세션의 `ANTHROPIC_BASE_URL` 같은 값은 그대로 전달합니다.
+  `env -i HOME=… PATH=… HTTPS_PROXY=… NODE_EXTRA_CA_CERTS=… SSL_CERT_FILE=…`처럼 로그인·프록시에 필요한 값만 넘겨 실행했습니다.
+- **VET의 기대수익은 수수료 전 값입니다.** 게이트가 왕복 수수료를 직접 뺍니다. 지시문에 수수료를 언급하면 모델이 미리 빼서 두 번 빠집니다(2026-11-01 발견·수정).
 - **프로세스를 이름으로 찾아 죽이지 마세요.** `pkill -f`·`pgrep -f`는 물론 `/proc/*/cmdline` 스캔도, 명령줄에 같은 문자열(스크립트 본문 포함)이 있으면 자기 셸을 죽입니다(이 작업에서 4번 겪음).
   서버는 시작할 때 PID를 저장해 두거나, 실행 파일 경로 `os.readlink(f"/proc/{pid}/exe")`가 `.../llama-server`로 끝나는지로 찾으세요.
 - `.env`, `.services/`(모델 2.5GB), `.cache/`, `.state/`(SQLite 장부)는 git에 없습니다. 비밀 값을 출력하거나 커밋하지 마세요.

@@ -113,6 +113,13 @@ RISK는 공개 sell quote로 예측 포지션을 평가합니다. Kalshi의 fina
 이 구현의 해석은 계약당 0/1 USD, 모의 redemption fee 0입니다. 진입 때 반영한 거래 수수료는 유지합니다.
 정산·현금·수량·거래 에피소드·감사 증거는 하나의 DB 트랜잭션으로 저장하고 반복 조회가 이중 입금되지 않도록 합니다.
 
+## 판단 모델과 모의 자금
+
+실제 진입 판단에는 로컬 4B·8B보다 강한 전역 모델을 권장합니다. 검증한 설정은 `LLM_PROVIDER=claude_cli`, `LLM_MODEL=claude-sonnet-5-5`입니다([CLI 호환](cli-providers.md)).
+원문 기준 1,000달러에서는 6% 상한 때문에 주문이 60달러이고, 최소 수수료 0.95달러가 왕복 약 3.2%가 됩니다.
+기대수익이 이보다 커야 수수료 게이트를 통과하므로 진입이 드뭅니다. `PAPER_INITIAL_CASH=10000`이면 600달러 주문의 왕복 수수료는 약 0.9%입니다.
+이는 원문 수수료 규칙의 결과이며 게이트를 바꾸지 않았습니다. 시작 금액은 새 장부에만 적용됩니다.
+
 ## 알림과 보존
 
 `NOTIFY_WEBHOOK_URL`(Discord·Slack incoming webhook) 또는 `NOTIFY_TELEGRAM_BOT_TOKEN`·`NOTIFY_TELEGRAM_CHAT_ID`를 설정하면

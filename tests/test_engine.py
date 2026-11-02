@@ -323,6 +323,11 @@ async def test_local_model_vet_reject_with_zero_estimates_completes(
     properties = schemas["VetOutput"]["properties"]
     # The model cites a short handle; the recorded analysis carries the snapshot hash.
     assert properties["evidence"]["items"]["enum"] == ["E1"]
+    if evidence == "cited":
+        with db.transaction() as s:
+            vet = s.scalars(select(AgentRecord).where(AgentRecord.role == "VET")).all()
+        digest = case.events[0].snapshots[0].digest
+        assert json.loads(vet[-1].payload)["evidence"] == [digest]
     assert properties["evidence"]["minItems"] == 1
     for name in ("win_probability", "win_payoff_ratio", "expected_return_fraction"):
         assert [x["type"] for x in properties[name]["anyOf"]] == ["number", "null"]

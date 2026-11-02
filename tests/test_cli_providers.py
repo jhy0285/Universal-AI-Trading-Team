@@ -283,6 +283,11 @@ async def test_custom_output_file_must_be_regular(mode, tmp_path):
 
 
 def test_child_credentials_mapping_and_unrelated_app_secrets_removed(tmp_path, monkeypatch):
+    # A worker started from a Claude Code terminal inherits that session's runtime markers.
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "parent-session")
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "kept-headless-login")
     monkeypatch.setenv("API_ADMIN_TOKEN", "do-not-forward-admin")
     monkeypatch.setenv("DATABASE_URL", "do-not-forward-db")
     monkeypatch.setenv("POSTGRES_PASSWORD", "do-not-forward-password")
@@ -307,6 +312,10 @@ def test_child_credentials_mapping_and_unrelated_app_secrets_removed(tmp_path, m
     assert "--disable-slash-commands" in command
     assert "--bare" not in command  # Claude bare mode skips normal OAuth credentials.
     assert "--dangerously-skip-permissions" not in command
+    # The one-shot call is not a nested session; its own login still works.
+    assert not {"CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT"} & set(child_env)
+    assert child_env["CLAUDE_CODE_OAUTH_TOKEN"] == "kept-headless-login"
+    assert child_env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
 
 
 @pytest.mark.parametrize(

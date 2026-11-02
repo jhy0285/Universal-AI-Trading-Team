@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from trading_team.data import DataError, DexScreener, PublicDataClient, SolanaOnchain
 from trading_team.domain import ExecutionQuote, Level, MarketSnapshot, TransactionWindow
-from trading_team.policy import MIN_ORDER, POSITION_CAP
+from trading_team.policy import CONCENTRATION_CAP, MIN_ORDER, POSITION_CAP
 from trading_team.settings import Settings
 from trading_team.storage import Database, SnapshotRow
 
@@ -32,6 +32,9 @@ WINDOW = timedelta(minutes=5)
 HISTORY_MIN = timedelta(minutes=5)
 HISTORY_MAX = timedelta(minutes=30)
 OVERSIZED_RETRY_SECONDS = 3600
+# The free holder scan screens up to this many times the quote budget, so rate-limited Jupiter
+# quotes go to pools that VET's on-chain checks would not reject anyway.
+SCREEN_FACTOR = 3
 
 
 class Pacer:
@@ -252,8 +255,8 @@ class MarketObserver:
         self.decimals: dict[str, int] = {}
         self.oversized: dict[str, float] = {}
 
-    def select(self, discovered: list[MarketSnapshot]) -> list[MarketSnapshot]:
-        """The most liquid Solana pool per asset, as SCAN selects it, within the call budget."""
+    def select(self, discovered: list[MarketSnapshot], limit: int) -> list[MarketSnapshot]:
+        """The most liquid Solana pool per asset, as SCAN selects it, most liquid first."""
         best: dict[str, MarketSnapshot] = {}
         for item in discovered:
             if item.chain != "solana" or item.liquidity_usd is None or item.liquidity_usd < 10000:
@@ -261,19 +264,42 @@ class MarketObserver:
             if item.asset_id not in best or item.liquidity_usd > best[item.asset_id].liquidity_usd:
                 best[item.asset_id] = item
         ranked = sorted(best.values(), key=lambda x: x.liquidity_usd, reverse=True)
-        return ranked[: self.settings.market_observer_max_assets]
+        return ranked[:limit]
 
     async def observe(
         self, discovered: list[MarketSnapshot], *, trades: bool = True
-    ) -> tuple[list[MarketSnapshot], list[dict]]:
+    ) -> tuple[list[MarketSnapshot], list[dict], list[dict]]:
+        """Observed snapshots, notes, and pools the on-chain screen rejected (with VET's reason)."""
         if not self.settings.market_observer_enabled:
-            return discovered, []
-        chosen = {(x.asset_id, x.pair_id) for x in self.select(discovered)}
-        result, errors = [], []
+            return discovered, [], []
+        budget = self.settings.market_observer_max_assets
+        chosen, screened, errors = {}, [], []
+        for item in self.select(discovered, budget * SCREEN_FACTOR):
+            if len(chosen) >= budget:
+                break
+            scan, notes = await self.screen(item)
+            errors.extend(notes)
+            reason = (
+                "ONCHAIN_UNAVAILABLE"
+                if scan is None
+                else "CONCENTRATION_OVER_5_PERCENT"
+                if scan["largest_token_account_share"] > CONCENTRATION_CAP
+                else "CONTRACT_SAFETY_UNVERIFIED"
+                if not scan["contract_safe"]
+                else None
+            )
+            if reason:
+                screened.append(
+                    {"asset_id": item.asset_id, "pair_id": item.pair_id, "reason": reason}
+                )
+            else:
+                chosen[(item.asset_id, item.pair_id)] = scan
+        result = []
         for item in discovered:
-            if (item.asset_id, item.pair_id) in chosen:
+            scan = chosen.get((item.asset_id, item.pair_id))
+            if scan is not None:
                 try:
-                    item, notes = await self.observe_entry(item, trades=trades)
+                    item, notes = await self.observe_entry(item, scan, trades=trades)
                     errors.extend(notes)
                 except DataError as exc:
                     errors.append(
@@ -285,7 +311,7 @@ class MarketObserver:
                         {"asset_id": item.asset_id, "source": "observer", "reason": reason}
                     )
             result.append(item)
-        return result, errors
+        return result, errors, screened
 
     def entry_depth(self) -> Decimal:
         """Buy depth to observe: twice the largest entry the 6% cap allows on the paper balance."""
@@ -324,65 +350,55 @@ class MarketObserver:
                 return item
         return None
 
+    async def screen(self, snapshot: MarketSnapshot) -> tuple[dict | None, list[dict]]:
+        """The free on-chain holder scan, or None when it is unavailable."""
+        mint = snapshot.asset_id.split(":", 1)[1]
+        if self.oversized.get(mint, 0) > time.monotonic():
+            note = {"source": "solana", "reason": "HOLDER_SCAN_TOO_LARGE_RECENTLY"}
+            return None, [{"asset_id": snapshot.asset_id} | note]
+        notes = []
+        pools = {snapshot.pair_id}
+        try:
+            pools |= {x.pair_id for x in await self.dex.token("solana", mint)}
+        except DataError as exc:
+            note = {"source": "dexscreener_pools", "reason": exc.code}
+            notes.append({"asset_id": snapshot.asset_id} | note)
+        try:
+            return await self.solana.scan_mint(mint, pools), notes
+        except DataError as exc:
+            if exc.code in {"DATA_RESPONSE_TOO_LARGE", "HOLDER_SCAN_INCOMPLETE_OR_TOO_LARGE"}:
+                self.oversized[mint] = time.monotonic() + OVERSIZED_RETRY_SECONDS
+            notes.append({"asset_id": snapshot.asset_id, "source": "solana", "reason": exc.code})
+            return None, notes
+
     async def observe_entry(
-        self, snapshot: MarketSnapshot, *, trades: bool = True
+        self, snapshot: MarketSnapshot, scan: dict, *, trades: bool = True
     ) -> tuple[MarketSnapshot, list[dict]]:
         mint = snapshot.asset_id.split(":", 1)[1]
         notes = []
         decimals = await self._decimals(mint)
         buy = await self.quotes.ladder(mint, decimals, "buy", self.entry_depth())
+        holders = scan["top_owners"]
         updates: dict = {
             "observed_at": buy.observed_at,
             "price": buy.reference_price,
             "buy_quote": buy,
+            "holder_count": scan["holder_count"],
+            "holder_observed_at": scan["observed_at"],
+            "largest_token_account_share": scan["largest_token_account_share"],
+            "onchain_verified": True,
+            "onchain_observed_at": scan["observed_at"],
+            "contract_safe": scan["contract_safe"],
+            "contract_source": scan["contract_source"],
         }
-        holders = None
-        if self.oversized.get(mint, 0) > time.monotonic():
-            notes.append(
-                {
-                    "asset_id": snapshot.asset_id,
-                    "source": "solana",
-                    "reason": "HOLDER_SCAN_TOO_LARGE_RECENTLY",
-                }
-            )
-        else:
-            try:
-                pools = {snapshot.pair_id}
-                try:
-                    pools |= {x.pair_id for x in await self.dex.token("solana", mint)}
-                except DataError as exc:
-                    notes.append(
-                        {
-                            "asset_id": snapshot.asset_id,
-                            "source": "dexscreener_pools",
-                            "reason": exc.code,
-                        }
-                    )
-                scan = await self.solana.scan_mint(mint, pools)
-                holders = scan["top_owners"]
-                updates |= {
-                    "holder_count": scan["holder_count"],
-                    "holder_observed_at": scan["observed_at"],
-                    "largest_token_account_share": scan["largest_token_account_share"],
-                    "onchain_verified": True,
-                    "onchain_observed_at": scan["observed_at"],
-                    "contract_safe": scan["contract_safe"],
-                    "contract_source": scan["contract_source"],
-                }
-                previous = self.previous(snapshot, scan["observed_at"])
-                if previous is not None:
-                    updates |= {
-                        "previous_holder_count": previous.holder_count,
-                        "previous_holder_observed_at": previous.holder_observed_at,
-                        "previous_price": previous.price,
-                        "previous_liquidity_usd": previous.liquidity_usd,
-                    }
-            except DataError as exc:
-                if exc.code in {"DATA_RESPONSE_TOO_LARGE", "HOLDER_SCAN_INCOMPLETE_OR_TOO_LARGE"}:
-                    self.oversized[mint] = time.monotonic() + OVERSIZED_RETRY_SECONDS
-                notes.append(
-                    {"asset_id": snapshot.asset_id, "source": "solana", "reason": exc.code}
-                )
+        previous = self.previous(snapshot, scan["observed_at"])
+        if previous is not None:
+            updates |= {
+                "previous_holder_count": previous.holder_count,
+                "previous_holder_observed_at": previous.holder_observed_at,
+                "previous_price": previous.price,
+                "previous_liquidity_usd": previous.liquidity_usd,
+            }
         if trades:
             try:
                 found = await self.trades.observe(snapshot.pair_id, mint, buy.observed_at, holders)

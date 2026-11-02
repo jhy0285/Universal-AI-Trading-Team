@@ -424,3 +424,39 @@ async def test_worker_schedules_hourly_review_only_when_autonomous(db, settings)
     finally:
         await off.close()
         await on.close()
+
+
+async def test_new_proposals_send_one_notice_and_change_nothing(db, settings, monkeypatch):
+    from trading_team import learning
+
+    desk = Desk(settings.model_copy(update={"autonomous_enabled": True}), db)
+    messages = []
+    monkeypatch.setattr(desk.notifier, "send", messages.append)
+    found = {"report": {"funnel": {"decisions": 3}}, "proposals": [], "created": ["k1", "k2"]}
+    monkeypatch.setattr(learning, "review", lambda *_args: found)
+    try:
+        jobs = {x.id: x for x in build_scheduler(desk, LeaseManager(db)).get_jobs()}
+        await jobs["learning"].func(*jobs["learning"].args)
+        found["created"] = []
+        await jobs["learning"].func(*jobs["learning"].args)
+    finally:
+        await desk.close()
+    assert messages == ["새 개선 제안 2건. 대시보드에서 검토하세요(자동 적용 없음)"]
+
+
+def test_snapshot_retention_cannot_cut_the_learning_window():
+    import math
+
+    from pydantic import ValidationError
+
+    from trading_team import learning
+    from trading_team.settings import LEARNING_SNAPSHOT_DAYS, Settings
+
+    needed = learning.LOOKBACK_DAYS + math.ceil(learning.PRIMARY_HORIZON / 86400)
+    assert LEARNING_SNAPSHOT_DAYS == needed
+    assert Settings(_env_file=None, snapshot_retention_days=0).snapshot_retention_days == 0
+    assert (
+        Settings(_env_file=None, snapshot_retention_days=needed).snapshot_retention_days == needed
+    )
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, snapshot_retention_days=needed - 1)

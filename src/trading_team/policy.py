@@ -20,6 +20,7 @@ FEE_FLOOR = D("0.95")
 MIN_ORDER = D("50")
 POSITION_CAP = D("0.06")
 SLIPPAGE_CAP = D("0.02")
+CONCENTRATION_CAP = D("0.05")
 POLICY_VERSION = "paper-interpretation-v1"
 
 
@@ -84,7 +85,7 @@ def vet_gate(
         or not 0 <= (now - snapshot.onchain_observed_at).total_seconds() <= 300
     ):
         return GateResult(allowed=False, reason="ONCHAIN_STALE")
-    if snapshot.largest_token_account_share > D("0.05"):
+    if snapshot.largest_token_account_share > CONCENTRATION_CAP:
         return GateResult(allowed=False, reason="CONCENTRATION_OVER_5_PERCENT")
     if snapshot.liquidity_usd is None or snapshot.liquidity_usd < max(D("10000"), order_usd * 50):
         return GateResult(allowed=False, reason="VET_LIQUIDITY")

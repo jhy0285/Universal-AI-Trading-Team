@@ -74,9 +74,12 @@ VET_TASK = (
     "missing data. Judge only what needs judgement: signal_priced_in (is the holder growth "
     "already reflected in price_change_h1_percent and derived.price_growth_fraction?), "
     "uses_world_news, and forecasts for a short holding period: win_probability, "
-    "win_payoff_ratio (average win / average loss) and expected_return_fraction. Paper fees are "
-    "max(0.45%, $0.95) per fill, paid on entry and exit. Forecasts are estimates, never observed "
-    "facts; use null when you cannot estimate. Cite evidence_id in evidence."
+    "win_payoff_ratio (average win / average loss) and expected_return_fraction, the expected "
+    "return BEFORE fees: Python subtracts the simulated round-trip fees itself, so do not deduct "
+    "them. Forecasts are estimates, never observed facts; use null when you cannot estimate. "
+    "verdict: PASS if your forecasts support an entry, REJECT if not. PASS_PARTIAL means a "
+    "required observation could not be verified; it blocks the entry, so do not use it for a "
+    "cautious pass. Cite evidence_id in evidence."
 )
 
 
@@ -303,7 +306,9 @@ class Desk:
                         discovered.setdefault((snapshot.asset_id, snapshot.pair_id), snapshot)
                 except DataError as exc:
                     errors.append({"query": query, "reason": exc.code})
-        observed, notes = await self.observer.observe(list(discovered.values()), trades=trades)
+        observed, notes, screened = await self.observer.observe(
+            list(discovered.values()), trades=trades
+        )
         errors.extend(notes)
         try:
             observed = await self.market_feed.enrich(observed)
@@ -315,6 +320,7 @@ class Desk:
         return {
             "snapshots": [x.model_dump(mode="json") | {"snapshot_id": x.digest} for x in results],
             "errors": errors,
+            "screened": screened,
             "count": len(results),
         }
 
@@ -472,8 +478,13 @@ class Desk:
         orders = []
         decisions = []
         try:
+            screened = {}
             if snapshots is None:
-                await self.collect()
+                collected = await self.collect()
+                # Pools the on-chain screen rejected keep VET's reason, not "no fresh price".
+                screened = {
+                    (x["asset_id"], x["pair_id"]): x["reason"] for x in collected["screened"]
+                }
                 snapshots = self.latest_snapshots()
             snapshots = list(snapshots)
             with self.db.transaction() as s:
@@ -484,7 +495,12 @@ class Desk:
                 self.broker.save_snapshot(snapshot)
             eligible = []
             for snapshot in snapshots:
-                gate = scan_gate(snapshot, clock(), self.settings.market_max_age_seconds)
+                reason = screened.get((snapshot.asset_id, snapshot.pair_id))
+                gate = (
+                    GateResult(allowed=False, reason=reason, details={"stage": "observer_screen"})
+                    if reason
+                    else scan_gate(snapshot, clock(), self.settings.market_max_age_seconds)
+                )
                 if gate.allowed:
                     # VET's model-free checks first: cheapest first, no model time on candidates
                     # that the observations already reject.
@@ -650,7 +666,10 @@ class Desk:
                     {"count": 0, "reason": "NO_VERIFIED_FRESH_CANDIDATES"},
                 )
             summary = {"orders": len(orders), "decisions": len(decisions), "paper_only": True}
-            if not recorded:
+            if not recorded and not orders:
+                # Nothing was filled: the facts are the report; no model usage per idle cycle.
+                self.record_agent(cycle_id, "CHIEF", "facts_only", summary)
+            elif not recorded:
                 try:
                     chief = await self.runtime.generate(
                         "CHIEF",

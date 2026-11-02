@@ -33,6 +33,10 @@ ProviderName = Literal[
 ]
 
 
+# Learning lookback (7 days) plus its 24-hour outcome horizon, in whole days.
+LEARNING_SNAPSHOT_DAYS = 8
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", frozen=True)
 
@@ -134,6 +138,16 @@ class Settings(BaseSettings):
             "goose": "goose_cli",
             "custom": "custom_cli",
         }.get(value, value)
+
+    @field_validator("snapshot_retention_days")
+    @classmethod
+    def keeps_learning_window(cls, value: int) -> int:
+        # The learning review reads 7 days of decisions and the prices 24 hours after each.
+        if 0 < value < LEARNING_SNAPSHOT_DAYS:
+            raise ValueError(
+                f"SNAPSHOT_RETENTION_DAYS must be 0 or at least {LEARNING_SNAPSHOT_DAYS}"
+            )
+        return value
 
     @field_validator("notify_webhook_url")
     @classmethod
