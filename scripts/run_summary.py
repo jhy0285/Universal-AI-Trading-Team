@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import func, select
@@ -77,11 +78,14 @@ def summarize(db: Database, account_id: str = "main") -> dict:
                 select(Position).where(Position.account_id == account_id, Position.quantity > 0)
             )
         ]
-        closed = s.execute(
-            select(func.count(), func.coalesce(func.sum(TradeEpisode.realized_pnl), 0)).where(
-                TradeEpisode.account_id == account_id, TradeEpisode.closed_at.is_not(None)
+        # Decimals are stored as text for exactness, so a SQL SUM fails on PostgreSQL.
+        pnl = list(
+            s.scalars(
+                select(TradeEpisode.realized_pnl).where(
+                    TradeEpisode.account_id == account_id, TradeEpisode.closed_at.is_not(None)
+                )
             )
-        ).one()
+        )
         snapshots = {
             kind: n
             for kind, n in s.execute(
@@ -113,7 +117,7 @@ def summarize(db: Database, account_id: str = "main") -> dict:
             ],
             "orders": {f"{side} {status}": n for (side, status), n in orders.items()},
             "open_positions": open_positions,
-            "closed_trades": {"count": closed[0], "realized_pnl": str(closed[1])},
+            "closed_trades": {"count": len(pnl), "realized_pnl": str(sum(pnl, Decimal(0)))},
             "snapshots_by_kind": snapshots,
         }
     result["ledger_integrity"] = PaperBroker(db).integrity(account_id)

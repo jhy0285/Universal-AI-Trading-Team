@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from decimal import Decimal
 from pathlib import Path
 
 from trading_team.domain import utcnow
-from trading_team.storage import AutomationJob, Cycle, Decision, ModelUsage
+from trading_team.storage import AutomationJob, Cycle, Decision, ModelUsage, TradeEpisode
 
 SPEC = importlib.util.spec_from_file_location(
     "run_summary", Path(__file__).resolve().parent.parent / "scripts" / "run_summary.py"
@@ -59,6 +60,17 @@ def seed(db):
                 latency_ms=1,
             )
         )
+        for name, pnl, closed in (("e1", "5.5", True), ("e2", "-2", True), ("e3", "0", False)):
+            s.add(
+                TradeEpisode(
+                    id=name,
+                    account_id="main",
+                    asset_id=name,
+                    opened_at=utcnow(),
+                    closed_at=utcnow() if closed else None,
+                    realized_pnl=Decimal(pnl),
+                )
+            )
         s.add(
             AutomationJob(
                 name="market-collect",
@@ -84,6 +96,8 @@ def test_summary_separates_unobserved_pools_and_counts_only_cycle_model_calls(db
     ]
     assert summary["scan_cycles"] == {"completed": 1}
     assert summary["orders"] == {} and summary["open_positions"] == []
+    # Text-stored Decimals: summed in Python, and the still-open episode is not a closed trade.
+    assert summary["closed_trades"] == {"count": 2, "realized_pnl": "3.5"}
     assert summary["jobs"]["market-collect"]["result"] == {"count": 3}
     assert all(summary["ledger_integrity"].values())
 
