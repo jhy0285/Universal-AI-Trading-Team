@@ -1,5 +1,28 @@
 # 검증 보고서
 
+## 실데이터 Sonnet worker 약 90분 — 2026-11-02, UTC
+
+PR #2 병합 후 `main`을 기반으로, 사용자가 승인한 설정으로 실데이터 worker를 돌렸습니다: 전역 모델 Claude Sonnet 5.5(`claude_cli`), **새 장부 10,000 USD**(원문 1,000 USD가 아님. 사용자가 선택), `DEX_DISCOVERY=launches`,
+`MARKET_OBSERVER_MAX_ASSETS`=3(기본), 무료 Jupiter 키 없음, 클라우드 공유 IP. 완료 기준인 **실데이터 모의 체결 1건은 달성하지 못했습니다.**
+
+| 검사 | 결과 |
+| --- | --- |
+| 실행 구간 | 1부 01:51:45~02:29:55Z(약 38분, 컨테이너 재시작으로 중단), 2부 02:31:26~03:23:26Z(52분, 같은 장부로 재개, `WORKER_SHUTDOWN`으로 정상 종료). 합계 약 90분 |
+| 사이클·결정 | SCAN 사이클 7회 모두 `completed`. 결정 **223건**(자산 49개), **체결 0건**, 현금 10,000 USD 불변, 현금·수량·감사 체인 무결성 3종 모두 True, SQLite `integrity_check` ok |
+| 결정 사유 | `STALE_OR_UNKNOWN_MARKET_TIME` 197(**88%**, 관측되지 않은 자산 46개), `TWO_DISJOINT_WINDOWS_REQUIRED` 9, `CONCENTRATION_OVER_5_PERCENT` 7, `PRICE_OUTRUNS_HOLDERS` 5, `HOLDER_HISTORY_UNAVAILABLE` 3, `ONCHAIN_UNAVAILABLE` 2 |
+| 관측된 풀 | 90분 동안 관측된 풀은 **8개뿐**(결정 26건). 수집당 상위 3개만 관측하는 설계라 병목은 관측 범위. 관측된 풀의 차단은 거래 구간 부족 9, 최대 보유자 5% 초과 7, 보유자보다 가격 선행 5 등. 거래 구간 부족이 GeckoTerminal 429인지 짧은 응답인지는 이번 실행에서 구분해 기록하지 못함 |
+| 모델 호출 | **시작 probe 4회뿐**(SCAN·VET·BOOK·CHIEF 각 1). 사이클 안의 SCAN·VET·CHIEF 호출은 0 — 후보가 모델에 닿기 전에 결정론적 검사에서 모두 막힘. 따라서 이번 실행은 Sonnet의 판단 품질에 대해 새로 알려 주는 것이 없음. 이 실행이 쓴 모델 호출은 probe 4회뿐이다. 별도로 접속 원인을 찾느라 1~5초짜리 진단 호출을 약 20회 했다 |
+| 재시작 복구 | 컨테이너 재시작으로 worker가 죽은 뒤, 죽은 worker의 lease가 만료(약 45초)되자 수동 조치 없이 같은 장부로 재개. `worker:main` 행은 재개 전까지 `running`으로 남았다가 새 실행이 갱신 |
+| 저장량 | 장부 DB 9.7MB / 90분(약 6.4MB/시간). 분당 약 107KB(결정·감사 포함, 9.7MB÷90분). 시장 스냅샷 2,770행(평균 1.0KB), Jupiter 견적 1,012행(평균 0.76KB). 14일 보존에서 하루 약 150MB 규모이므로 24시간 실행에서 실측할 것 |
+| 작업 겹침 | 1분 수집이 60초를 넘어 1회 건너뜀(`max_instances=1`로 의도된 동작) |
+| 학습 루프 | `DATA_COVERAGE` 제안 1건(결정의 88~89%가 관측 부족). 게이트 이후 +1h 가격 표본은 5개 사유에 2~30건으로 `sufficient` 기준(30건·자산 5개) 미달이라 결론 없음. 보정 표본 0 |
+| Claude CLI 접속 | probe 8.8초로 4역할 통과. 처음 `CLI_TIMEOUT`이 난 원인은 `.env`에 남은 로컬 모델 `LLM_BASE_URL`이 `ANTHROPIC_BASE_URL`을 덮어쓴 것(인증·네트워크는 정상). `scripts/debug_cli_provider.py`로 진단 |
+
+**해석.** 이번에도 막은 것은 모델이 아니라 후보 자료와 관측 범위입니다. 게이트는 바꾸지 않았습니다. 게이트를 바꾸려면 재생으로 먼저 시험하고 정책 버전을 올리며 사용자 승인이 필요합니다.
+**다음에 시험할 만한 것(승인 필요):** `MARKET_OBSERVER_MAX_ASSETS`를 5~6으로 올리고 무료 Jupiter 키를 쓰기, 공유되지 않은 IP(사용자 PC)에서 더 길게 실행하기.
+
+**검증하지 못한 것:** 실데이터 모의 체결, 24시간 이상 연속 운영(이번 최장 52분 연속), 이번 실행에서 Sonnet이 후보를 평가한 사례(0건), BOOK(World Monitor는 이 컨테이너에서 띄울 수 없음: Node 22·Docker 데몬 없음), 학습 루프 제안의 효과.
+
 ## Claude Sonnet 5.5 판단 모델 — 2026-11-01, UTC
 
 전역 모델을 `LLM_PROVIDER=claude_cli`, `LLM_MODEL=claude-sonnet-5-5`로 바꿔 같은 입력으로 비교했습니다. 컨테이너의 기존 Claude Code 로그인을 썼고,
