@@ -87,6 +87,7 @@ async def test_autonomous_collection_and_risk_do_not_wait_for_model(db, settings
             assert job.state == "completed" and json.loads(job.result)["count"] == 3
         # The minute collection leaves trade windows to SCAN time.
         assert calls == [{"trades": False}]
+        assert json.loads(job.result)["screened"] == []
     finally:
         await desk.close()
 

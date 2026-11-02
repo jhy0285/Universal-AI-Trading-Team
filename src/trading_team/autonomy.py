@@ -69,6 +69,7 @@ async def collect(desk) -> dict:
         "status": "observed",
         "count": result["count"],
         "errors": result["errors"],
+        "screened": result.get("screened", []),
         "paper_only": True,
     }
 
