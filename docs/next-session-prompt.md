@@ -30,7 +30,9 @@
   관측 풀 6개 125분: 관측 풀 15개, SCAN 5·VET 8회가 모두 첫 응답 통과. Sonnet이 4개 풀을 승률 0.30~0.42, 기대수익 −2~−5%로 모두 REJECT. 체결 0.
   6풀에서는 1분 수집이 60초를 넘어 120분 중 30회 건너뛴다.
   관측 풀 8개·수집 주기 120초(AUTONOMOUS_COLLECT_SECONDS=120) 120분: 건너뜀 0, 수집 중앙값 64.5초·최대 110초, 모델에 닿은 풀 6개(VET 9회)를 Sonnet이 전부 REJECT, 체결 0.
-  다음 시험은 무료 Jupiter 키(JUPITER_API_KEY)로 10풀·60초, 공유되지 않은 IP에서 24시간 이상. 결과는 scripts/run_summary.py 로 본다.
+  무료 Jupiter 키로 관측 풀 10개·수집 주기 60초 120분: 관측 풀 18개, 수집 중앙값 34.6초(키 없는 8풀은 64.5초), 모델에 닿은 풀 3개(VET 6회)를 Sonnet이 전부 REJECT, 체결 0.
+  새 병목은 공용 Solana RPC 429(수집마다)와 GeckoTerminal 거래 구간. 다음 시험은 경로에 키가 있는 무료 Solana RPC(SOLANA_RPC_URL), 공유되지 않은 IP에서 24시간 이상. 결과는 scripts/run_summary.py 로 본다.
+  Jupiter 키는 이 세션 환경에 request_credential로 저장돼 있다(값은 모른다). 앱에는 JUPITER_API_KEY=proxy-injected 자리표시만 넘기면 프록시가 진짜 키를 붙인다.
   주된 차단 사유: 최대 보유자 5% 초과, 보유자보다 가격이 빨리 오름, 어린 pair 유동성 감소, 상위 보유자 매도,
   GeckoTerminal 429로 거래 구간 없음(클라우드 공유 IP).
 - 1,000 USD 원문 자금에서는 주문 60 USD, 최소 수수료 0.95 USD로 왕복 약 3.2%가 들어 진입이 매우 드물다.
