@@ -21,7 +21,7 @@
   체결 없는 사이클의 CHIEF 모델 호출 생략, 학습 제안 알림, 보존 1~7일 거부, 문서.
 - 브랜치: claude/nice-einstein-fz8wua는 병합돼 삭제해도 된다(원격 삭제는 세션 권한에서 403, 사용자가 웹에서). claude/beautiful-faraday-wwthsb에는
   이후 커밋(scripts/debug_cli_provider.py, 90분 실행 기록)이 있다. PR은 사용자가 요청할 때만 만든다.
-- 테스트: pytest 255건, SQLite·PostgreSQL 16 모두 통과.
+- 테스트: pytest 257건. 2026-11-09 문서 변경 후 SQLite에서 통과를 확인했고, PostgreSQL 16은 CI(`pytest --postgres`)가 돌린다.
 - 판단 모델: 로컬 Qwen3-4B·8B는 VET를 신뢰할 수 없음(거의 항상 "이미 반영", 추정치 고정·null).
   Claude Sonnet 5.5는 같은 실제 관측 9건에 후보별 근거 있는 판단(모두 REJECT, 기대수익 음수).
 - 합성 강신호(10,000 USD)에서는 Sonnet PASS → 600 USD 모의 체결 → RISK 청산 +54.33 USD까지 확인.
@@ -31,10 +31,14 @@
   6풀에서는 1분 수집이 60초를 넘어 120분 중 30회 건너뛴다.
   관측 풀 8개·수집 주기 120초(AUTONOMOUS_COLLECT_SECONDS=120) 120분: 건너뜀 0, 수집 중앙값 64.5초·최대 110초, 모델에 닿은 풀 6개(VET 9회)를 Sonnet이 전부 REJECT, 체결 0.
   무료 Jupiter 키로 관측 풀 10개·수집 주기 60초 120분: 관측 풀 18개, 수집 중앙값 34.6초(키 없는 8풀은 64.5초), 모델에 닿은 풀 3개(VET 6회)를 Sonnet이 전부 REJECT, 체결 0.
-  새 병목은 공용 Solana RPC 429(수집마다)와 GeckoTerminal 거래 구간. 다음 시험은 경로에 키가 있는 무료 Solana RPC(SOLANA_RPC_URL), 공유되지 않은 IP에서 24시간 이상. 결과는 scripts/run_summary.py 로 본다.
-  Jupiter 키는 이 세션 환경에 request_credential로 저장돼 있다(값은 모른다). 앱에는 JUPITER_API_KEY=proxy-injected 자리표시만 넘기면 프록시가 진짜 키를 붙인다.
+  그때의 병목은 공용 Solana RPC 429(수집 112회 중 97회). Helius 무료 Solana RPC(SOLANA_RPC_URL=https://mainnet.helius-rpc.com)로 같은 10풀·60초 120분을 돌리자
+  수집 오류 0, ONCHAIN_UNAVAILABLE 0, 수집 중앙값 30.7초(건너뜀 0), 모델에 닿은 풀 7개(VET 19회)였고 Sonnet이 19건을 모두 REJECT(승률 0.30~0.44, 기대수익 −5%~−1%), 체결 0.
+  체결 0은 이제 자료가 아니라 시장·전략 결과로 보인다. Alchemy 무료는 getProgramAccounts가 429로 막혀 쓸 수 없었다(자세한 표는 docs/validation-report.md).
+  남은 병목: GeckoTerminal 거래 구간(클라우드 공유 IP). 다음 시험은 공유되지 않은 IP에서 24시간 이상. 결과는 scripts/run_summary.py 로 본다.
+  Jupiter·Helius 키는 이 세션 환경에 request_credential로 저장돼 있다(값은 모른다). 앱에는 JUPITER_API_KEY=proxy-injected 자리표시와 키 없는 SOLANA_RPC_URL만 넘기면 프록시가 진짜 키를 헤더로 붙인다.
+  한계: 앱은 RPC에 키 헤더를 보내지 않고 URL의 키도 거부한다. 프록시가 없는 환경에서 Helius를 쓰려면 앱에 RPC 키 헤더 설정(미구현)이 필요하다.
   주된 차단 사유: 최대 보유자 5% 초과, 보유자보다 가격이 빨리 오름, 어린 pair 유동성 감소, 상위 보유자 매도,
-  GeckoTerminal 429로 거래 구간 없음(클라우드 공유 IP).
+  GeckoTerminal 429로 거래 구간 없음(클라우드 공유 IP). Helius 실행에서는 관측된 풀 결정 74건 중 자료 가용성 21·시장 규칙 34·모델 19.
 - 1,000 USD 원문 자금에서는 주문 60 USD, 최소 수수료 0.95 USD로 왕복 약 3.2%가 들어 진입이 매우 드물다.
   10,000 USD(PAPER_INITIAL_CASH)면 왕복 약 0.9%. 게이트는 바꾸지 않았다.
 
