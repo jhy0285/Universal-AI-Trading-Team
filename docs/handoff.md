@@ -42,7 +42,10 @@
    `MARKET_OBSERVER_MAX_ASSETS=6` 125분은 관측 풀 15개, 모델 호출 SCAN 5·VET 8로 후보가 처음 모델에 닿았지만 Sonnet이 4개 풀을 모두 음의 기대수익으로 REJECT했습니다.
    이제 병목은 살아남는 후보의 수와 질입니다. 키 없이 8풀·수집 주기 120초 120분도 체결 0이었고, 모델에 닿은 풀은 6개로 늘었지만 Sonnet이 전부 REJECT했습니다(수집 건너뜀은 0).
    무료 Jupiter 키(개인 환경 `AI trading`에 `request_credential`로 저장, 앱에는 자리표시 `JUPITER_API_KEY=proxy-injected`만 넘김)로 10풀·60초 120분: 관측 풀 18개, 수집 중앙값 34.6초, 모델에 닿은 풀 3개를 Sonnet이 전부 REJECT, 체결 0.
-   새 병목은 공용 Solana RPC 429(수집 112회 중 112건)와 거래 구간(GeckoTerminal)입니다. 다음 시험: 경로에 키가 들어가는 무료 Solana RPC를 `SOLANA_RPC_URL`에 설정(무료 등급이 `getProgramAccounts`를 허용하는지 미확인), 공유되지 않은 IP에서 24시간 이상 실행.
+   그때의 병목은 공용 Solana RPC 429(수집 112회 중 97회)였습니다. **Helius 무료 Solana RPC로 바꾼 10풀·60초 120분(2026-11-09)에서는 수집 오류 0, `ONCHAIN_UNAVAILABLE` 0, 모델 심사 VET 19회(7개 풀)로 병목이 풀렸지만 Sonnet이 19건을 모두 REJECT(승률 0.30~0.44, 기대수익 −5%~−1%)해 체결은 0**입니다. 체결 0건은 이제 자료 문제가 아니라 시장·전략 결과로 보입니다.
+   Alchemy 무료는 홀더 스캔(`getProgramAccounts`)이 429로 막혀 쓸 수 없었습니다([검증 보고서](validation-report.md)). Helius 키는 이 세션 환경에 `request_credential`로 저장되어 있고(값은 모름), 앱에는 키 없는 `SOLANA_RPC_URL=https://mainnet.helius-rpc.com`만 주면 프록시가 `x-api-key` 헤더를 붙입니다.
+   **알려진 한계:** 앱은 RPC에 키 헤더를 보내지 않고 URL의 키도 거부하므로 이 결과는 프록시가 키를 붙여 주는 환경에서만 재현됩니다. 사용자 PC·서버에서 쓰려면 앱에 RPC 키 헤더 설정을 추가해야 합니다(미구현). Helius 무료 월 1M 크레딧은 이 구성으로 상시 가동하면 약 5~6일치입니다.
+   다음 시험: 공유되지 않은 IP에서 24시간 이상 실행, 그리고 체결이 없는 이유를 게이트별로 보고 사용자와 방향을 정하기(게이트 변경은 재생 시험 + 정책 버전 상승 + 사용자 승인).
    학습 루프의 1시간 뒤 가격: 신규 상장 풀은 평균적으로 크게 하락(표본 작음, 결론 아님). 체결이 드문 것이 결함이 아닐 수 있습니다.
    실행 결과는 `.venv/bin/python scripts/run_summary.py`(읽기 전용)로 한 번에 봅니다.
 2. **worker를 24시간 이상 연속 실행해 점검합니다.** 저장량(14일 보존), lease, 타임아웃, 모델 지연, 학습 루프 제안이 쌓이는 양을 봅니다.
