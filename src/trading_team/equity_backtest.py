@@ -12,8 +12,8 @@ from __future__ import annotations
 import math
 import statistics
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
 TRADING_DAYS = 252
@@ -167,14 +167,25 @@ def rsi_series(values: Sequence[float | None], period: int) -> list[float | None
     return out
 
 
+def _next_day(days: Sequence[date], i: int) -> date:
+    """The day after days[i]: the next bar, or for the last bar the next weekday (a holiday that
+    delays the real next session is unknown here; that can only make a decision come early)."""
+    if i + 1 < len(days):
+        return days[i + 1]
+    following = days[i] + timedelta(days=1)
+    while following.weekday() >= 5:
+        following += timedelta(days=1)
+    return following
+
+
 def month_end(days: Sequence[date], i: int) -> bool:
     """True on the last trading day of a month. Only the calendar is used, never a price."""
-    return i + 1 < len(days) and days[i + 1].month != days[i].month
+    return _next_day(days, i).month != days[i].month
 
 
 def week_end(days: Sequence[date], i: int) -> bool:
     """True on the last trading day of an ISO week. Only the calendar is used."""
-    return i + 1 < len(days) and days[i + 1].isocalendar()[:2] != days[i].isocalendar()[:2]
+    return _next_day(days, i).isocalendar()[:2] != days[i].isocalendar()[:2]
 
 
 class Strategy(Protocol):
@@ -206,6 +217,9 @@ class BuyAndHold:
             raise BacktestDataError(f"{symbol} is not in the market")
 
     def weights(self, i: int) -> dict[str, float] | None:
+        return {self.symbol: 1.0}
+
+    def target(self, i: int) -> dict[str, float]:
         return {self.symbol: 1.0}
 
 
@@ -262,8 +276,10 @@ class DualMomentum:
         )
 
     def weights(self, i: int) -> dict[str, float] | None:
-        if not month_end(self.market.days, i):
-            return None
+        return self.target(i) if month_end(self.market.days, i) else None
+
+    def target(self, i: int) -> dict[str, float]:
+        """The portfolio the rule would hold after day i, whether or not it is a month end."""
         scored: list[tuple[float, str]] = []
         for symbol in self.universe:
             close = self.market.close[symbol]
@@ -353,6 +369,28 @@ class RSI2Reversion:
         return {self.symbol: 1.0} if self._held[i] else {}
 
 
+class RecordedDecisions:
+    """Replays weights that were decided and written down earlier, one per decision day."""
+
+    def __init__(self, market: Market, decisions: Mapping[date, Mapping[str, float]]):
+        self.name = "recorded decisions"
+        self._by_index = {
+            i: dict(decisions[day]) for i, day in enumerate(market.days) if day in decisions
+        }
+
+    def weights(self, i: int) -> dict[str, float] | None:
+        found = self._by_index.get(i)
+        return None if found is None else dict(found)
+
+
+@dataclass(frozen=True, slots=True)
+class Trade:
+    day: date  # the day the order executes, at its open
+    symbol: str
+    notional: float  # > 0 buy, < 0 sell, in units of the starting equity, before costs
+    cost: float  # cost paid on this order, same units
+
+
 @dataclass(frozen=True, slots=True)
 class Result:
     name: str
@@ -364,6 +402,13 @@ class Result:
     invested_days: int
     carried: int  # marks left unchanged because a price was missing
     postponed: int  # rebalances delayed a day because a needed open price was missing
+    trades: tuple[Trade, ...] = ()
+    holdings: Mapping[str, float] = field(
+        default_factory=dict
+    )  # value per symbol after the last close
+    pending: Mapping[str, float] | None = (
+        None  # weights decided at the last close, not executed yet
+    )
 
 
 def _validated(weights: Mapping[str, float], market: Market) -> dict[str, float]:
@@ -395,6 +440,7 @@ def run_backtest(
     first_weights = strategy.weights(first - 1)
     pending = None if first_weights is None else _validated(first_weights, market)
     equity: list[float] = []
+    trades: list[Trade] = []
     orders = invested = carried = postponed = 0
     traded = cost_paid = 0.0
     for i in range(first, n):
@@ -416,6 +462,10 @@ def run_backtest(
                 gross = sum(moves.values())
                 cost = gross * rate
                 scale = (equity_open - cost) / equity_open
+                for symbol in sorted(symbols):
+                    if moves[symbol] > _EPS:
+                        signed = targets[symbol] - values.get(symbol, 0.0)
+                        trades.append(Trade(market.days[i], symbol, signed, moves[symbol] * rate))
                 orders += sum(1 for m in moves.values() if m > _EPS)
                 traded += gross
                 cost_paid += cost
@@ -431,10 +481,9 @@ def run_backtest(
                 last_close[symbol] = closed
         equity.append(cash + sum(values.values()))
         invested += 1 if values else 0
-        if i + 1 < n:
-            decision = strategy.weights(i)
-            if decision is not None:
-                pending = _validated(decision, market)
+        decision = strategy.weights(i)  # the last one is never executed but shows what is next
+        if decision is not None:
+            pending = _validated(decision, market)
     return Result(
         strategy.name,
         market.days[first:],
@@ -445,6 +494,9 @@ def run_backtest(
         invested,
         carried,
         postponed,
+        tuple(trades),
+        dict(values),
+        None if pending is None else dict(pending),
     )
 
 

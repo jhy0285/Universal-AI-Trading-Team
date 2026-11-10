@@ -298,7 +298,9 @@ def test_rolling_beat_rate_counts_strictly_better_windows():
 def test_week_end_marks_only_the_last_trading_day_of_an_iso_week():
     days = weekdays(15, date(2024, 1, 1))  # Monday 2024-01-01 .. Friday 2024-01-19
     marked = [d for i, d in enumerate(days) if week_end(days, i)]
-    assert marked == [date(2024, 1, 5), date(2024, 1, 12)]  # the last day has no next day
+    # The last bar has no next bar yet: the next weekday (Monday 22nd) decides, so it counts too.
+    assert marked == [date(2024, 1, 5), date(2024, 1, 12), date(2024, 1, 19)]
+    assert not week_end(days[:12], 11)  # Wednesday the 17th: the next weekday is still this week
 
 
 def test_the_defensive_asset_takes_the_remainder_or_cash_when_it_does_not_trade():

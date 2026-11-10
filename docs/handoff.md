@@ -31,6 +31,7 @@
 | VET 판단 품질 | 4B·8B 신뢰 불가 / Claude Sonnet 5.5 동작 | 로컬은 `signal_priced_in`을 거의 항상 true. Sonnet은 같은 9건에 후보별 근거·추정치 |
 | 모델이 PASS를 낸 뒤 주문까지 | Sonnet으로 합성 자료에서 확인 | 강신호 합성 사례에서 PASS → 600 USD 체결 → RISK 청산. 실데이터 체결은 아직 없음 |
 | 미국 주식·ETF 백테스트([equity-backtest](equity-backtest.md)) | 구현·실데이터로 실행 | 목표 "SPY 보유와 비슷한 수익 + 낙폭 40% 이상 축소"를 사전 고정하고 후보 11개를 개발 2001–2019에서 비교, 선택된 `mom12_top5_def`(12-1개월 모멘텀 상위 5개, 빈 칸 SHY)를 검증 2020–2026에서 한 번 확인: **근소하게 미달**(연수익 13.4% 대 14.8%, 낙폭 −23.2% 대 −33.7%). 모의 운용·LLM 판단은 아직 연결 안 함 |
+| 미국 ETF 실시간 모의 운용([equity-paper](equity-paper.md)) | 구현·실데이터로 시작(2026-11-10) | `mom12_top5_def`와 SPY 보유를 하루 1회 결정·기록(불변, 시각·데이터 해시·`timely`)하고 백테스트 엔진으로 모의 자산 계산. 시작 데이터 2026-11-09, 목표 EEM·QQQ·XLE·XLK·XLV 각 20%. **판정은 1년·SPY 낙폭 15% 이상일 때만.** 기록은 이 컨테이너 디스크에만 있어 회수되면 사라짐 |
 | BOOK(예측시장) | 대기 | World Monitor 교차 신호 0개. 실제 BOOK 진입 미검증 |
 | 장기 무중단 운영 | 미검증 | 최장 약 90분(중간에 컨테이너 재시작이 있었고 같은 장부로 수동 조치 없이 재개). 2026-11-02 실데이터 90분: 결정 223건, 체결 0, 88%가 관측되지 않은 풀 |
 
@@ -40,7 +41,8 @@
    (b) 개선은 **반자동**입니다: 학습 루프가 제안하면 AI가 재생·백테스트로 검증해 구체적 변경안을 가져오고, **사용자가 승인한 뒤에만** 적용합니다. 자동 적용은 하지 않습니다.
    (c) 성공 기준(사용자가 선택): **SPY 보유와 비슷한 수익 + 더 작은 낙폭**. 숫자로 고정했습니다(연수익 ≥ SPY − 1%p, 최대 낙폭 ≤ SPY의 60%).
    결과는 위 표와 [equity-backtest](equity-backtest.md): 개발 구간에서는 통과, 검증 구간에서는 근소하게 미달. **검증 구간은 한 번 열렸으므로 더는 깨끗하지 않습니다.** 후보를 더 만들어 이 구간으로 고르지 마세요. 기준을 바꾸려면 결과를 본 뒤의 변경이라고 기록하고 사용자 승인을 받으세요.
-   다음 단계(사용자 승인 필요): `mom12_top5_def`와 SPY 보유를 일봉 기준 **실시간 모의 운용**으로 연결합니다(하루 1회 판단, 새 테이블, 결정은 다음 시가 이전에 기록하고 체결은 실제 시가로 사후 계산). 이것이 새로운 깨끗한 검증입니다. 낙폭 기준은 폭락이 와야 평가되므로 판단까지 수개월~수년이 걸릴 수 있습니다. LLM은 과거 백테스트가 아니라 **실시간 모의 운용에서만** 평가합니다(모델이 과거를 알아 미래 정보가 샙니다).
+   **2026-11-10 사용자 승인으로 `mom12_top5_def`와 SPY 보유를 일봉 실시간 모의 운용에 연결했습니다**([equity-paper](equity-paper.md)): 하루 1회 결정을 불변으로 기록하고 모의 자산은 백테스트 엔진으로 재생해 계산합니다. 이것이 새로운 깨끗한 검증입니다. 낙폭 기준은 폭락이 와야 평가되므로 판단까지 수개월~수년이 걸릴 수 있습니다.
+   **해야 할 일:** 매일 `DATABASE_URL=… trading-team equity-paper run`을 돌립니다(이 세션에서는 예약 작업이 07:41 KST에 호출). 기록이 컨테이너 디스크에만 있으므로 **몇 달 가는 시험은 사용자 PC나 서버의 PostgreSQL/지속 디스크로 옮겨야** 합니다. LLM은 과거 백테스트가 아니라 **실시간 모의 운용에서만** 평가합니다(모델이 과거를 알아 미래 정보가 샙니다).
 1. **실데이터 모의 체결 1건을 확인합니다.** 판단 모델은 Claude Sonnet 5.5(`claude_cli`)로 정했습니다([CLI 호환](cli-providers.md)). 후보별 추정치와 합성 자료의 PASS → 체결은 확인했습니다.
    남은 완료 기준은 결정론적 게이트를 통과한 **실데이터** 모의 체결 1건입니다. 1,000 USD에서는 왕복 수수료가 약 3.2%라 진입이 드뭅니다([자동 페이퍼](autonomous-paper.md)).
    후보가 모델에 닿는 비율은 보유자 선검사로 높였습니다. 더 넓히려면 무료 Jupiter 키와 함께 `MARKET_OBSERVER_MAX_ASSETS`를 올리세요.
@@ -133,8 +135,9 @@ PostgreSQL로 테스트하려면 임시 클러스터를 띄워 `UAT_TEST_DATABAS
 | `observer.py`, `data.py` | 무료 시장 관측, 외부 어댑터 |
 | `llm.py`, `llm_types.py`, `cli_providers.py` | Provider, 재시도·교정, `LLMError.detail` |
 | `learning.py` | 측정과 제안(매시간, 읽기 전용) |
-| `equity_backtest.py`, `scripts/backtest_equities.py` | 미국 주식·ETF 일봉 백테스트(주문·장부 없음, 연구 전용) |
+| `equity_backtest.py`, `scripts/backtest_equities.py`, `scripts/equity_candidates.py` | 미국 주식·ETF 일봉 백테스트와 사전 등록 기준으로 후보 고르기(주문·장부 없음, 연구 전용) |
+| `equity_paper.py` | 미국 ETF 실시간 모의 운용: 결정 기록·모의 자산 재생(`trading-team equity-paper`, 새 테이블 3개) |
 | `worker.py`, `autonomy.py`, `operations.py` | 스케줄, 자동 운영 상태, lease·감독 |
 | `api.py`, `dashboard.py`, `cli.py` | FastAPI, Streamlit 13개 화면, `trading-team` |
 | `notify.py` | 선택적 Discord·Slack·Telegram 알림 |
-| `tests/` | 288건(2026-11-10). `conftest.py`의 `db` 픽스처가 SQLite 또는 PostgreSQL 스키마를 제공 |
+| `tests/` | 300건(2026-11-10). `conftest.py`의 `db` 픽스처가 SQLite 또는 PostgreSQL 스키마를 제공 |

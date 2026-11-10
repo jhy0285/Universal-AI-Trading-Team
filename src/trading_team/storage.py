@@ -307,6 +307,46 @@ class ImprovementProposal(Base):
     occurrences: Mapped[int] = mapped_column(Integer, default=1)
 
 
+class EquityPaperRun(Base):
+    """One forward paper run of a US ETF strategy (a paper index, not the trade ledger)."""
+
+    __tablename__ = "equity_paper_runs"
+    strategy: Mapped[str] = mapped_column(String(60), primary_key=True)
+    description: Mapped[str] = mapped_column(Text)
+    start_day: Mapped[str] = mapped_column(String(10))  # data_through of the first decision
+    initial_cash: Mapped[Decimal] = mapped_column(ExactDecimal)
+    cost_bps: Mapped[Decimal] = mapped_column(ExactDecimal)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class EquityPaperDecision(Base):
+    """Target weights decided from data through `data_through`. Written once, never changed."""
+
+    __tablename__ = "equity_paper_decisions"
+    __table_args__ = (UniqueConstraint("strategy", "data_through"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    strategy: Mapped[str] = mapped_column(String(60), index=True)
+    data_through: Mapped[str] = mapped_column(String(10))
+    kind: Mapped[str] = mapped_column(String(10))  # initial | rule
+    weights: Mapped[str] = mapped_column(Text)  # JSON {symbol: weight as decimal text}
+    recorded_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    timely: Mapped[bool] = mapped_column()  # recorded before the next US session opened
+    data_digest: Mapped[str] = mapped_column(String(64))
+
+
+class EquityPaperNav(Base):
+    """Paper equity at the close of `day`, derived from the recorded decisions. Append-only."""
+
+    __tablename__ = "equity_paper_nav"
+    strategy: Mapped[str] = mapped_column(String(60), primary_key=True)
+    day: Mapped[str] = mapped_column(String(10), primary_key=True)
+    equity: Mapped[Decimal] = mapped_column(ExactDecimal)
+    holdings: Mapped[str] = mapped_column(Text, default="{}")  # JSON {symbol: USD value}
+    pending: Mapped[str | None] = mapped_column(Text, nullable=True)  # weights not executed yet
+    recorded_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    data_digest: Mapped[str] = mapped_column(String(64))
+
+
 class ReplayRun(Base):
     __tablename__ = "replay_runs"
     id: Mapped[str] = mapped_column(String(100), primary_key=True)

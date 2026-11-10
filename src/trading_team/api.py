@@ -10,7 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import Field
 from sqlalchemy import select
 
-from trading_team import learning
+from trading_team import equity_paper, learning
 from trading_team.data import DataError
 from trading_team.domain import PredictionQuestion, StrictModel, VenueTarget, utcnow
 from trading_team.engine import Desk
@@ -273,6 +273,11 @@ def create_app(settings: Settings | None = None, desk: Desk | None = None) -> Fa
     @app.get("/learning")
     def learning_report(account_id: str = "main"):
         return learning.latest(db, account_id)
+
+    @app.get("/equity-paper")
+    def equity_paper_status():
+        # Read only: what the forward paper run of the US ETF strategies has recorded.
+        return equity_paper.status(db)
 
     @app.post("/learning/run", dependencies=[Depends(admin)])
     async def learning_run(body: LearningRunRequest):
