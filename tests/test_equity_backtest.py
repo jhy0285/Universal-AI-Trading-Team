@@ -25,10 +25,12 @@ from trading_team.equity_backtest import (
     rolling_beat_rate,
     rsi_series,
     run_backtest,
+    since,
     sma_series,
     subperiod,
     week_end,
 )
+from trading_team.equity_markets import KR, PROFILES, US
 
 STAMP = 1704205800  # 2024-01-02 14:30 UTC, the open of a US trading day
 
@@ -374,3 +376,59 @@ def test_every_pre_registered_candidate_builds_and_runs_without_breaking_the_rul
     for key, strategy in found.items():
         result = run_backtest(market, strategy, cost_bps=5, first=260)  # weights are validated
         assert result.equity[-1] > 0, key
+
+
+def test_the_us_profile_is_the_original_setup_unchanged():
+    assert US.reference == "SPY" and US.universe == DEFAULT_UNIVERSE
+    assert US.defensive == DEFENSIVE_ASSET and (US.cost_bps, US.robust_cost_bps) == (5.0, 10.0)
+    assert US.history_start is None and US.symbols == (*DEFAULT_UNIVERSE, DEFENSIVE_ASSET)
+    symbols = (*DEFAULT_UNIVERSE, DEFENSIVE_ASSET)
+    market = market_of({s: random_walk(300, k) for k, s in enumerate(symbols)})
+    explicit = candidates(market, symbol="SPY", universe=DEFAULT_UNIVERSE)
+    assert {k: v.name for k, v in explicit.items()} == {
+        k: v.name for k, v in candidates(market).items()
+    }
+
+
+def test_profiles_are_consistent_and_never_mix_markets():
+    for profile in PROFILES.values():
+        assert profile.reference in profile.universe  # the benchmark is also a ranked asset
+        assert profile.defensive not in profile.universe  # the defensive asset only fills slots
+        assert len(set(profile.universe)) == len(profile.universe)
+        assert len(set(profile.symbols)) == len(profile.symbols)
+        assert 0 < profile.cost_bps < profile.robust_cost_bps
+        assert profile.dev_end < profile.holdout_start
+    assert KR.reference == "069500.KS" and KR.defensive == "114100.KS"
+    assert all(s.endswith(".KS") for s in KR.symbols) and not set(KR.symbols) & set(US.symbols)
+    assert KR.history_start is not None and len(KR.universe) == 20
+    assert (KR.cost_bps, KR.robust_cost_bps) == (10.0, 20.0)
+
+
+def test_the_same_rules_run_on_another_market_and_trade_only_its_own_symbols():
+    symbols = (*KR.universe, KR.defensive)
+    market = market_of({s: random_walk(420, k) for k, s in enumerate(symbols)})
+    found = candidates(market, KR.defensive, symbol=KR.reference, universe=KR.universe)
+    assert len(found) == 11 and len({s.name for s in found.values()}) == 11
+    for key, strategy in found.items():
+        assert "SPY" not in strategy.name, key
+        result = run_backtest(market, strategy, cost_bps=KR.cost_bps, first=260)
+        assert result.equity[-1] > 0, key
+        assert set(result.holdings) <= set(symbols), key
+    with pytest.raises(BacktestDataError):  # a US symbol does not exist in this market
+        candidates(market, KR.defensive, symbol="SPY", universe=KR.universe)
+
+
+def test_since_leaves_out_unusable_early_bars_without_counting_them_as_dropped():
+    body = payload(
+        "069500.KS",
+        opens=(100.0, 101.0, None, 103.0),
+        closes=(101.0, 102.0, 103.0, 104.0),
+        adj=(1.0, 1.0, 1.0, 1.0),
+    )
+    series = parse_yahoo_chart(body, "069500.KS")
+    assert len(series.bars) == 3 and series.dropped == 1  # the None open is dropped, counted
+    cut = since(series, series.bars[1].day)
+    assert [b.day for b in cut.bars] == [series.bars[1].day, series.bars[2].day]
+    assert cut.dropped == 1 and cut.symbol == series.symbol  # the audit count is not rewritten
+    with pytest.raises(BacktestDataError):
+        since(series, series.bars[-1].day + timedelta(days=1))

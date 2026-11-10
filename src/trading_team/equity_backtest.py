@@ -86,6 +86,16 @@ def parse_yahoo_chart(payload: object, symbol: str) -> Series:
     return Series(symbol.upper(), tuple(bars), dropped)
 
 
+def since(series: Series, start: date) -> Series:
+    """The series without its bars before `start`. For a provider whose early history is
+    unusable (placeholder rows, then a gap of years): the cut is stated, never inferred from a
+    price, and the bars left out are not counted as dropped data."""
+    kept = tuple(bar for bar in series.bars if bar.day >= start)
+    if not kept:
+        raise BacktestDataError(f"{series.symbol}: no bars on or after {start}")
+    return Series(series.symbol, kept, series.dropped)
+
+
 @dataclass(frozen=True, slots=True)
 class Market:
     days: tuple[date, ...]  # the reference symbol's trading days
@@ -549,26 +559,34 @@ DEV_END = date(2019, 12, 31)
 HOLDOUT_START = date(2020, 1, 1)
 
 
-def candidates(market: Market, defensive: str = DEFENSIVE_ASSET) -> dict[str, Strategy]:
+def candidates(
+    market: Market,
+    defensive: str = DEFENSIVE_ASSET,
+    *,
+    symbol: str = "SPY",
+    universe: Sequence[str] = DEFAULT_UNIVERSE,
+) -> dict[str, Strategy]:
     """The fixed, pre-registered candidate list: 11 strategies, parameters from the literature.
 
     The first three are the strategies of the first backtest (cash when out of the market); the
     other eight are the same ideas with the defensive asset instead of cash, plus volatility
     targeting. Nothing here is tuned; adding or changing candidates after seeing results would
-    raise the number of trials and must be reported as such.
+    raise the number of trials and must be reported as such. `symbol` is the benchmark the
+    single-asset rules trade and `universe` the set the momentum rules rank; another market uses
+    the same rules with its own symbols (see equity_markets.py).
     """
     return {
-        "trend": TrendFilter(market, "SPY", 200),
-        "momentum": DualMomentum(market, top_n=3),
-        "rsi2": RSI2Reversion(market, "SPY"),
-        "trend200_def": TrendFilter(market, "SPY", 200, defensive),
-        "trend100_def": TrendFilter(market, "SPY", 100, defensive),
-        "mom12_top3_def": DualMomentum(market, top_n=3, defensive=defensive),
-        "mom12_top5_def": DualMomentum(market, top_n=5, defensive=defensive),
-        "mom6_top3_def": DualMomentum(market, top_n=3, lookback=126, defensive=defensive),
-        "mom6_top5_def": DualMomentum(market, top_n=5, lookback=126, defensive=defensive),
-        "vol10_def": VolTarget(market, "SPY", 0.10, 20, defensive),
-        "vol12_def": VolTarget(market, "SPY", 0.12, 20, defensive),
+        "trend": TrendFilter(market, symbol, 200),
+        "momentum": DualMomentum(market, universe, top_n=3),
+        "rsi2": RSI2Reversion(market, symbol),
+        "trend200_def": TrendFilter(market, symbol, 200, defensive),
+        "trend100_def": TrendFilter(market, symbol, 100, defensive),
+        "mom12_top3_def": DualMomentum(market, universe, top_n=3, defensive=defensive),
+        "mom12_top5_def": DualMomentum(market, universe, top_n=5, defensive=defensive),
+        "mom6_top3_def": DualMomentum(market, universe, top_n=3, lookback=126, defensive=defensive),
+        "mom6_top5_def": DualMomentum(market, universe, top_n=5, lookback=126, defensive=defensive),
+        "vol10_def": VolTarget(market, symbol, 0.10, 20, defensive),
+        "vol12_def": VolTarget(market, symbol, 0.12, 20, defensive),
     }
 
 
