@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     autonomous_enabled: bool = False
     autonomous_collect_seconds: int = Field(default=60, ge=30, le=900)
     autonomous_probe_retry_seconds: int = Field(default=3600, ge=900, le=86400)
+    # Forward paper run of the US ETF strategies (docs/equity-paper.md). Paper only, off by default.
+    equity_paper_enabled: bool = False
+    equity_paper_cost_bps: float = Field(default=5.0, ge=0, le=100)
+    equity_paper_initial_cash: Decimal = Field(
+        default=Decimal("10000"), gt=0, le=100_000_000, allow_inf_nan=False
+    )
     llm_cli_executable: str = ""
     llm_cli_command: tuple[str, ...] = Field(default=(), repr=False)
     llm_cli_input: Literal["json", "text"] = "json"

@@ -161,6 +161,32 @@ def build_scheduler(desk: Desk, leases: LeaseManager) -> AsyncIOScheduler:
         )
         return readiness
 
+    async def equity_paper():
+        # Records the day's decisions and the paper equity of the US ETF strategies. No orders.
+        from trading_team import equity_paper as paper
+
+        return await asyncio.to_thread(
+            paper.run_once,
+            desk.db,
+            fetch=paper.yahoo_fetcher(),
+            cost_bps=desk.settings.equity_paper_cost_bps,
+            initial_cash=desk.settings.equity_paper_initial_cash,
+        )
+
+    if desk.settings.equity_paper_enabled:
+        # After the US close (06:00 or 05:00 Seoul) and well before the next US open; a run at
+        # start-up catches up on any missed day.
+        scheduler.add_job(
+            invoke,
+            "cron",
+            hour=7,
+            minute=30,
+            args=["equity-paper", equity_paper],
+            id="equity-paper",
+            name="US ETF paper run 07:30 Asia/Seoul",
+            next_run_time=utcnow(),
+        )
+
     immediate = {"next_run_time": utcnow()} if desk.settings.autonomous_enabled else {}
     if desk.settings.autonomous_enabled:
         scheduler.add_job(

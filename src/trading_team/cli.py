@@ -118,7 +118,32 @@ def main():
     serve = sub.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
+    paper = sub.add_parser(
+        "equity-paper", help="forward paper run of the US ETF strategies (no LLM, no orders)"
+    )
+    paper.add_argument("action", choices=("run", "status"))
     args = parser.parse_args()
+    if args.command == "equity-paper":
+        from trading_team import equity_paper
+        from trading_team.storage import Base
+
+        settings = Settings()
+        db = Database(settings.database_url)
+        Base.metadata.create_all(db.engine)  # tables only: this never creates the main account
+        try:
+            if args.action == "run":
+                result = equity_paper.run_once(
+                    db,
+                    fetch=equity_paper.yahoo_fetcher(),
+                    cost_bps=settings.equity_paper_cost_bps,
+                    initial_cash=settings.equity_paper_initial_cash,
+                )
+            else:
+                result = equity_paper.status(db)
+        finally:
+            db.engine.dispose()
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        return
     if args.command == "providers":
         from trading_team.cli_registry import inventory, transport_info
 
