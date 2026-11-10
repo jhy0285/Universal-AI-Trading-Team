@@ -52,8 +52,12 @@ def _positive(value: object) -> bool:
     )
 
 
-def parse_yahoo_chart(payload: object, symbol: str) -> Series:
-    """Daily bars from a Yahoo chart response (an unofficial endpoint, no stability promise)."""
+def parse_yahoo_chart(payload: object, symbol: str, start: date | None = None) -> Series:
+    """Daily bars from a Yahoo chart response (an unofficial endpoint, no stability promise).
+
+    `start` leaves out every row before that date, for a provider whose early history is
+    unusable (placeholder rows, then a gap of years). The cut is stated by the caller, never
+    inferred from a price, and the rows left out are not counted as dropped bars."""
     try:
         chart = payload["chart"]  # type: ignore[index]
         if chart.get("error"):
@@ -77,6 +81,8 @@ def parse_yahoo_chart(payload: object, symbol: str) -> Series:
         if previous is not None and day <= previous:
             raise BacktestDataError(f"{symbol}: timestamps are not strictly increasing")
         previous = day
+        if start is not None and day < start:
+            continue
         if not all(_positive(v) for v in (raw_open, raw_close, adj_close)):
             dropped += 1
             continue
@@ -86,14 +92,36 @@ def parse_yahoo_chart(payload: object, symbol: str) -> Series:
     return Series(symbol.upper(), tuple(bars), dropped)
 
 
-def since(series: Series, start: date) -> Series:
-    """The series without its bars before `start`. For a provider whose early history is
-    unusable (placeholder rows, then a gap of years): the cut is stated, never inferred from a
-    price, and the bars left out are not counted as dropped data."""
-    kept = tuple(bar for bar in series.bars if bar.day >= start)
-    if not kept:
-        raise BacktestDataError(f"{series.symbol}: no bars on or after {start}")
-    return Series(series.symbol, kept, series.dropped)
+def suspect_days(
+    series: Series, reference: Series, *, move: float = 0.10, calm: float = 0.05
+) -> tuple[date, ...]:
+    """Days on which a symbol jumps by more than `move` (close to close, overnight gap or open
+    to close) while the reference stayed within `calm` on every one of those measures. A lone
+    spike like that is more likely a bad print than a real move. The reference is never
+    checked, and a day on which the reference cannot be measured is not flagged. For a
+    sensitivity run only: the official run uses the bars as the provider gives them."""
+
+    def moves(bars: tuple[Bar, ...], k: int) -> tuple[float, float, float]:
+        a, b = bars[k - 1], bars[k]
+        return b.close / a.close - 1.0, b.open / a.close - 1.0, b.close / b.open - 1.0
+
+    index = {bar.day: k for k, bar in enumerate(reference.bars) if k > 0}
+    flagged: list[date] = []
+    for k in range(1, len(series.bars)):
+        day = series.bars[k].day
+        if day not in index or max(abs(m) for m in moves(series.bars, k)) <= move:
+            continue
+        if max(abs(m) for m in moves(reference.bars, index[day])) < calm:
+            flagged.append(day)
+    return tuple(flagged)
+
+
+def without_days(series: Series, days: Sequence[date]) -> Series:
+    """The series without the bars on `days`, which then count as missing in the market."""
+    leave = set(days)
+    return Series(
+        series.symbol, tuple(b for b in series.bars if b.day not in leave), series.dropped
+    )
 
 
 @dataclass(frozen=True, slots=True)

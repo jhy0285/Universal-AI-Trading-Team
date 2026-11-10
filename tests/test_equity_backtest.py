@@ -10,11 +10,13 @@ from trading_team.equity_backtest import (
     DEFAULT_UNIVERSE,
     DEFENSIVE_ASSET,
     BacktestDataError,
+    Bar,
     BuyAndHold,
     DualMomentum,
     Market,
     Metrics,
     RSI2Reversion,
+    Series,
     TrendFilter,
     VolTarget,
     candidates,
@@ -25,10 +27,11 @@ from trading_team.equity_backtest import (
     rolling_beat_rate,
     rsi_series,
     run_backtest,
-    since,
     sma_series,
     subperiod,
+    suspect_days,
     week_end,
+    without_days,
 )
 from trading_team.equity_markets import KR, PROFILES, US
 
@@ -418,17 +421,46 @@ def test_the_same_rules_run_on_another_market_and_trade_only_its_own_symbols():
         candidates(market, KR.defensive, symbol="SPY", universe=KR.universe)
 
 
-def test_since_leaves_out_unusable_early_bars_without_counting_them_as_dropped():
+def test_a_stated_start_leaves_out_early_rows_without_counting_them_as_dropped():
     body = payload(
         "069500.KS",
-        opens=(100.0, 101.0, None, 103.0),
-        closes=(101.0, 102.0, 103.0, 104.0),
-        adj=(1.0, 1.0, 1.0, 1.0),
+        opens=(100.0, None, 101.0, None, 103.0),
+        closes=(101.0, 102.0, 103.0, 104.0, 105.0),
+        adj=(1.0, 1.0, 1.0, 1.0, 1.0),
     )
-    series = parse_yahoo_chart(body, "069500.KS")
-    assert len(series.bars) == 3 and series.dropped == 1  # the None open is dropped, counted
-    cut = since(series, series.bars[1].day)
-    assert [b.day for b in cut.bars] == [series.bars[1].day, series.bars[2].day]
-    assert cut.dropped == 1 and cut.symbol == series.symbol  # the audit count is not rewritten
+    everything = parse_yahoo_chart(body, "069500.KS")
+    assert len(everything.bars) == 3 and everything.dropped == 2
+    start = everything.bars[1].day
+    cut = parse_yahoo_chart(body, "069500.KS", start)
+    assert [b.day for b in cut.bars] == [b.day for b in everything.bars[1:]]
+    assert cut.dropped == 1  # only the bad row on or after the start counts
     with pytest.raises(BacktestDataError):
-        since(series, series.bars[-1].day + timedelta(days=1))
+        parse_yahoo_chart(body, "069500.KS", everything.bars[-1].day + timedelta(days=3))
+
+
+def series_of(symbol: str, closes, opens=None) -> Series:
+    days = weekdays(len(closes))
+    opens = opens or closes
+    return Series(
+        symbol, tuple(Bar(d, o, c) for d, o, c in zip(days, opens, closes, strict=True)), 0
+    )
+
+
+def test_only_a_lone_spike_is_suspect_and_the_reference_is_never_judged():
+    calm = [100.0 + k * 0.1 for k in range(30)]
+    reference = series_of("REF", calm)
+    spike = list(calm)
+    spike[10] = calm[10] * 1.15  # +15% close, back to normal the next day
+    lone = series_of("A", spike)
+    assert suspect_days(lone, reference) == (lone.bars[10].day, lone.bars[11].day)
+    only_open = series_of("B", calm, opens=[c * 1.2 if k == 12 else c for k, c in enumerate(calm)])
+    assert suspect_days(only_open, reference) == (only_open.bars[12].day,)  # a bad open print
+    # A market-wide move is real: the reference moved too, so nothing is flagged.
+    crash = [c * 0.85 if k >= 10 else c for k, c in enumerate(calm)]
+    assert suspect_days(series_of("C", crash), series_of("REF", crash)) == ()
+    # The reference itself is not checked, and a day it does not trade cannot be compared.
+    assert suspect_days(reference, series_of("X", spike)) == ()
+    short = Series("S", tuple(b for b in lone.bars if b.day != lone.bars[10].day), 0)
+    assert suspect_days(lone, short) == (lone.bars[11].day,)  # day 10 is unknown: not flagged
+    left = without_days(lone, suspect_days(lone, reference))
+    assert len(left.bars) == len(lone.bars) - 2 and left.dropped == lone.dropped

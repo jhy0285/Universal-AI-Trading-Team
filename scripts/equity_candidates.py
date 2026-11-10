@@ -34,8 +34,9 @@ from trading_team.equity_backtest import (
     judge,
     parse_yahoo_chart,
     run_backtest,
-    since,
     subperiod,
+    suspect_days,
+    without_days,
 )
 from trading_team.equity_markets import PROFILES
 
@@ -50,6 +51,11 @@ def main():
     parser.add_argument("--cache-dir", type=Path, default=None, help="default: the profile's")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--drop-suspect",
+        action="store_true",
+        help="SENSITIVITY ONLY: leave out lone spikes (see suspect_days); never opens the hold-out",
+    )
     args = parser.parse_args()
     profile = PROFILES[args.market]
     cache = args.cache_dir or Path(profile.cache_dir)
@@ -59,9 +65,21 @@ def main():
     series, digests = {}, {}
     for symbol in profile.symbols:
         payload, digest, _ = fetch(symbol, cache, args.refresh)
-        parsed = parse_yahoo_chart(payload, symbol)
-        series[symbol] = since(parsed, profile.history_start) if profile.history_start else parsed
+        series[symbol] = parse_yahoo_chart(payload, symbol, profile.history_start)
         digests[symbol] = digest
+    removed: dict[str, tuple[date, ...]] = {}
+    if args.drop_suspect:
+        for symbol in series:
+            if symbol != ref:
+                removed[symbol] = suspect_days(series[symbol], series[ref])
+                series[symbol] = without_days(series[symbol], removed[symbol])
+        print(
+            "SENSITIVITY RUN (not the pre-registered one): lone spikes are left out as missing;"
+            f" {sum(len(v) for v in removed.values())} bars. The hold-out stays closed."
+        )
+        for symbol, days_out in removed.items():
+            if days_out:
+                print(f"  {symbol:<10} " + ", ".join(d.isoformat() for d in days_out))
     market = build_market(series, ref)
     strategies = {
         "benchmark": BuyAndHold(market, ref),
@@ -94,7 +112,7 @@ def main():
     print(
         f"  {'':<16} {'CAGR':>7} {'maxDD':>8} {'Sharpe':>7} {'orders/yr':>9}  return risk  cost-robust"
     )
-    out: dict = {"market": profile.key, "development": {}}
+    out: dict = {"market": profile.key, "development": {}, "drop_suspect": args.drop_suspect}
     passing: list[tuple[float, float, str]] = []
     for key, res in runs[low].items():
         m_low = window(res, None, profile.dev_end)
@@ -127,6 +145,10 @@ def main():
             " was NOT opened."
         )
         out["chosen"] = None
+    elif args.drop_suspect:
+        names = ", ".join(sorted(k for _, _, k in passing))
+        print(f"\nPassing in this sensitivity run: {names}. The hold-out stays closed.")
+        out["passing"] = sorted(k for _, _, k in passing)
     else:
         passing.sort()
         chosen = passing[0][2]
