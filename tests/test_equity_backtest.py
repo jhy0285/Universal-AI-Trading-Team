@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import math
 import random
 from datetime import date, timedelta
 
 import pytest
 
 from trading_team.equity_backtest import (
+    DEFAULT_UNIVERSE,
+    DEFENSIVE_ASSET,
     BacktestDataError,
     BuyAndHold,
     DualMomentum,
     Market,
+    Metrics,
     RSI2Reversion,
     TrendFilter,
+    VolTarget,
+    candidates,
     compute_metrics,
+    judge,
     month_end,
     parse_yahoo_chart,
     rolling_beat_rate,
@@ -20,6 +27,7 @@ from trading_team.equity_backtest import (
     run_backtest,
     sma_series,
     subperiod,
+    week_end,
 )
 
 STAMP = 1704205800  # 2024-01-02 14:30 UTC, the open of a US trading day
@@ -185,12 +193,18 @@ def make_strategies(market):
         TrendFilter(market, "SPY", 50),
         DualMomentum(market, ("SPY", "QQQ", "TLT"), top_n=2, lookback=120, skip=10),
         RSI2Reversion(market, "SPY", trend=50),
+        TrendFilter(market, "SPY", 50, "SHY"),
+        DualMomentum(
+            market, ("SPY", "QQQ", "TLT"), top_n=2, lookback=120, skip=10, defensive="SHY"
+        ),
+        VolTarget(market, "SPY", 0.10, 20, "SHY"),
     ]
 
 
 def test_no_strategy_can_see_a_price_after_the_day_it_decides():
     n = 700
-    base = {s: random_walk(n, seed) for s, seed in (("SPY", 1), ("QQQ", 2), ("TLT", 3))}
+    seeds = (("SPY", 1), ("QQQ", 2), ("TLT", 3), ("SHY", 4))
+    base = {s: random_walk(n, seed) for s, seed in seeds}
     for cut in (200, 301, 450, 599):
         # Same history through day `cut`, different prices afterwards.
         other = {
@@ -202,7 +216,7 @@ def test_no_strategy_can_see_a_price_after_the_day_it_decides():
 
 
 def test_the_whole_run_is_deterministic():
-    market = market_of({s: random_walk(400, k) for k, s in enumerate(("SPY", "QQQ", "TLT"))})
+    market = market_of({s: random_walk(400, k) for k, s in enumerate(("SPY", "QQQ", "TLT", "SHY"))})
     one = [run_backtest(market, s, cost_bps=5, first=130).equity for s in make_strategies(market)]
     two = [run_backtest(market, s, cost_bps=5, first=130).equity for s in make_strategies(market)]
     assert one == two
@@ -279,3 +293,82 @@ def test_rolling_beat_rate_counts_strictly_better_windows():
     assert rolling_beat_rate(days, fast, slow) == (1.0, 12)
     assert rolling_beat_rate(days, slow, slow) == (0.0, 12)
     assert rolling_beat_rate(days[:100], fast[:100], slow[:100]) == (None, 0)
+
+
+def test_week_end_marks_only_the_last_trading_day_of_an_iso_week():
+    days = weekdays(15, date(2024, 1, 1))  # Monday 2024-01-01 .. Friday 2024-01-19
+    marked = [d for i, d in enumerate(days) if week_end(days, i)]
+    assert marked == [date(2024, 1, 5), date(2024, 1, 12)]  # the last day has no next day
+
+
+def test_the_defensive_asset_takes_the_remainder_or_cash_when_it_does_not_trade():
+    flat = [(100.0, 100.0)] * 120
+    market = market_of({"SPY": drifting(120, -0.002), "SHY": flat})
+    assert TrendFilter(market, "SPY", 50, "SHY").weights(100) == {"SHY": 1.0}
+    gap = market_of({"SPY": drifting(120, -0.002), "SHY": [(None, None)] * 120})
+    assert TrendFilter(gap, "SPY", 50, "SHY").weights(100) == {}  # unknown price: cash, no guess
+    up = market_of({"SPY": drifting(120, 0.002), "SHY": flat})
+    assert TrendFilter(up, "SPY", 50, "SHY").weights(100) == {"SPY": 1.0}
+    with pytest.raises(BacktestDataError):
+        TrendFilter(up, "SPY", 50, "XYZ")
+
+
+def test_momentum_leaves_empty_slots_to_the_defensive_asset():
+    flat = [(100.0, 100.0)] * 300
+    market = market_of(
+        {
+            "A": drifting(300, 0.001),
+            "B": drifting(300, -0.001),
+            "C": drifting(300, -0.002),
+            "SHY": flat,
+        }
+    )
+    i = next(k for k in range(260, 299) if month_end(market.days, k))
+    one_up = DualMomentum(market, ("A", "B", "C"), top_n=2, defensive="SHY")
+    assert one_up.weights(i) == {"A": 0.5, "SHY": 0.5}
+    all_down = market_of({"A": drifting(300, -0.001), "B": drifting(300, -0.002), "SHY": flat})
+    assert DualMomentum(all_down, ("A", "B"), top_n=2, defensive="SHY").weights(i) == {"SHY": 1.0}
+
+
+def test_vol_target_scales_to_the_target_and_only_decides_at_week_end():
+    prices, price = [], 100.0
+    for k in range(60):  # alternating +1% / -1% days: constant, known volatility
+        price *= 1.01 if k % 2 == 0 else 0.99
+        prices.append((price, price))
+    market = market_of({"SPY": prices, "SHY": [(100.0, 100.0)] * 60})
+    strategy = VolTarget(market, "SPY", 0.10, 20, "SHY")
+    i = next(k for k in range(30, 58) if week_end(market.days, k))
+    sigma = 0.01 * math.sqrt(20 / 19) * math.sqrt(252)  # sample stdev of 20 moves of +-1%
+    weights = strategy.weights(i)
+    assert weights["SPY"] == pytest.approx(0.10 / sigma, rel=0.02)
+    assert weights["SHY"] == pytest.approx(1 - weights["SPY"])
+    assert strategy.weights(i + 1) is None  # not a week end
+    assert strategy.weights(5) is None  # not enough prices to measure volatility
+    calm = market_of({"SPY": drifting(60, 0.0005)})
+    assert VolTarget(calm, "SPY", 0.10, 20).weights(i) == {"SPY": 1.0}  # never more than 100%
+    with pytest.raises(ValueError):
+        VolTarget(calm, "SPY", 0.0)
+
+
+def metrics(cagr, drawdown):
+    return Metrics(10.0, 1.0, cagr, 0.15, 0.5, drawdown, 100)
+
+
+def test_the_success_criterion_needs_similar_return_and_a_much_smaller_drawdown():
+    bench = metrics(0.089, -0.552)
+    assert judge(metrics(0.085, -0.30), bench).passed
+    assert not judge(metrics(0.070, -0.30), bench).return_ok  # trails by more than 1 point
+    assert not judge(metrics(0.095, -0.40), bench).risk_ok  # drawdown above 60% of -55.2%
+    assert judge(metrics(0.080, -0.331), bench).passed  # on the line is allowed
+    assert not judge(metrics(None, -0.2), bench).passed  # an unknown CAGR is not a pass
+    assert not judge(metrics(0.1, -0.2), metrics(None, -0.5)).passed
+
+
+def test_every_pre_registered_candidate_builds_and_runs_without_breaking_the_rules():
+    symbols = (*DEFAULT_UNIVERSE, DEFENSIVE_ASSET)
+    market = market_of({s: random_walk(420, k) for k, s in enumerate(symbols)})
+    found = candidates(market)
+    assert len(found) == 11 and len({s.name for s in found.values()}) == 11
+    for key, strategy in found.items():
+        result = run_backtest(market, strategy, cost_bps=5, first=260)  # weights are validated
+        assert result.equity[-1] > 0, key

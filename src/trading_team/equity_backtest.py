@@ -172,11 +172,26 @@ def month_end(days: Sequence[date], i: int) -> bool:
     return i + 1 < len(days) and days[i + 1].month != days[i].month
 
 
+def week_end(days: Sequence[date], i: int) -> bool:
+    """True on the last trading day of an ISO week. Only the calendar is used."""
+    return i + 1 < len(days) and days[i + 1].isocalendar()[:2] != days[i].isocalendar()[:2]
+
+
 class Strategy(Protocol):
     name: str
 
     def weights(self, i: int) -> dict[str, float] | None:
         """Target weights decided at the close of day i from data up to i. None = no decision."""
+
+
+def _fill_defensive(
+    weights: dict[str, float], defensive: str | None, market: Market, i: int
+) -> dict[str, float]:
+    """Put the unallocated remainder into the defensive asset, if it trades; else stay in cash."""
+    spare = 1.0 - sum(weights.values())
+    if defensive is None or spare <= _EPS or market.close[defensive][i] is None:
+        return weights
+    return {**weights, defensive: weights.get(defensive, 0.0) + spare}
 
 
 class BuyAndHold:
@@ -195,20 +210,31 @@ class BuyAndHold:
 
 
 class TrendFilter:
-    """Hold the symbol while its close is above its simple moving average, else cash."""
+    """Hold the symbol while its close is above its simple moving average, else the defensive
+    asset (or cash when none is given or it does not trade yet)."""
 
-    def __init__(self, market: Market, symbol: str = "SPY", window: int = 200):
+    def __init__(
+        self,
+        market: Market,
+        symbol: str = "SPY",
+        window: int = 200,
+        defensive: str | None = None,
+    ):
         BuyAndHold._check(market, symbol)
-        self.symbol = symbol
+        if defensive is not None:
+            BuyAndHold._check(market, defensive)
+        self.market, self.symbol, self.defensive = market, symbol, defensive
         self.close = market.close[symbol]
         self.average = sma_series(self.close, window)
-        self.name = f"trend filter {symbol} > SMA{window}"
+        self.name = f"trend filter {symbol} > SMA{window}" + (
+            f" else {defensive}" if defensive else ""
+        )
 
     def weights(self, i: int) -> dict[str, float] | None:
         close, average = self.close[i], self.average[i]
-        if close is None or average is None:
-            return {}  # no signal means no position
-        return {self.symbol: 1.0} if close > average else {}
+        if close is None or average is None or close <= average:
+            return _fill_defensive({}, self.defensive, self.market, i)  # no signal: risk off
+        return {self.symbol: 1.0}
 
 
 class DualMomentum:
@@ -221,14 +247,19 @@ class DualMomentum:
         top_n: int = 3,
         lookback: int = TRADING_DAYS,
         skip: int = 21,
+        defensive: str | None = None,
     ):
         if top_n < 1 or not 0 <= skip < lookback:
             raise ValueError("need top_n >= 1 and 0 <= skip < lookback")
-        for symbol in universe:
+        for symbol in (*universe, *([defensive] if defensive else [])):
             BuyAndHold._check(market, symbol)
-        self.market, self.universe = market, tuple(universe)
+        self.market, self.universe, self.defensive = market, tuple(universe), defensive
         self.top_n, self.lookback, self.skip = top_n, lookback, skip
-        self.name = f"momentum top{top_n} of {len(self.universe)} (12-1m, monthly)"
+        months = round(lookback / 21)
+        self.name = (
+            f"momentum top{top_n} of {len(self.universe)} ({months}-{round(skip / 21)}m, monthly)"
+            + (f", empty slots {defensive}" if defensive else "")
+        )
 
     def weights(self, i: int) -> dict[str, float] | None:
         if not month_end(self.market.days, i):
@@ -243,7 +274,44 @@ class DualMomentum:
             if momentum > 0:
                 scored.append((-momentum, symbol))
         scored.sort()
-        return {symbol: 1.0 / self.top_n for _, symbol in scored[: self.top_n]}
+        picks = {symbol: 1.0 / self.top_n for _, symbol in scored[: self.top_n]}
+        return _fill_defensive(picks, self.defensive, self.market, i)
+
+
+class VolTarget:
+    """Weekly: hold the symbol at target_vol / realised vol (at most 1), the rest defensive."""
+
+    def __init__(
+        self,
+        market: Market,
+        symbol: str = "SPY",
+        target_vol: float = 0.10,
+        window: int = 20,
+        defensive: str | None = None,
+    ):
+        BuyAndHold._check(market, symbol)
+        if defensive is not None:
+            BuyAndHold._check(market, defensive)
+        if target_vol <= 0 or window < 2:
+            raise ValueError("need target_vol > 0 and window >= 2")
+        self.market, self.symbol, self.defensive = market, symbol, defensive
+        self.target_vol, self.window = target_vol, window
+        self.name = f"vol target {target_vol:.0%} on {symbol} ({window}d, weekly)" + (
+            f", rest {defensive}" if defensive else ""
+        )
+
+    def weights(self, i: int) -> dict[str, float] | None:
+        if not week_end(self.market.days, i):
+            return None
+        close = self.market.close[self.symbol]
+        window = close[i - self.window : i + 1]
+        if i < self.window or any(v is None for v in window):
+            return None  # not enough real prices to measure volatility: no decision
+        prices = [v for v in window if v is not None]
+        moves = [b / a - 1.0 for a, b in zip(prices, prices[1:], strict=False)]
+        sigma = statistics.stdev(moves) * math.sqrt(TRADING_DAYS)
+        share = 1.0 if sigma <= 0 else min(1.0, self.target_vol / sigma)
+        return _fill_defensive({self.symbol: share}, self.defensive, self.market, i)
 
 
 class RSI2Reversion:
@@ -420,6 +488,63 @@ def subperiod(result: Result, start: date, end: date) -> Metrics:
     a, b = idx[0], idx[-1]
     base = result.equity[a - 1] if a > 0 else 1.0
     return compute_metrics(result.days[a : b + 1], result.equity[a : b + 1], base)
+
+
+DEFENSIVE_ASSET = "SHY"  # 1-3 year Treasuries: what a real investor holds instead of idle cash
+# Development window (candidates are compared and one is chosen here) and hold-out window (opened
+# once, only for the chosen candidate).
+DEV_END = date(2019, 12, 31)
+HOLDOUT_START = date(2020, 1, 1)
+
+
+def candidates(market: Market, defensive: str = DEFENSIVE_ASSET) -> dict[str, Strategy]:
+    """The fixed, pre-registered candidate list: 11 strategies, parameters from the literature.
+
+    The first three are the strategies of the first backtest (cash when out of the market); the
+    other eight are the same ideas with the defensive asset instead of cash, plus volatility
+    targeting. Nothing here is tuned; adding or changing candidates after seeing results would
+    raise the number of trials and must be reported as such.
+    """
+    return {
+        "trend": TrendFilter(market, "SPY", 200),
+        "momentum": DualMomentum(market, top_n=3),
+        "rsi2": RSI2Reversion(market, "SPY"),
+        "trend200_def": TrendFilter(market, "SPY", 200, defensive),
+        "trend100_def": TrendFilter(market, "SPY", 100, defensive),
+        "mom12_top3_def": DualMomentum(market, top_n=3, defensive=defensive),
+        "mom12_top5_def": DualMomentum(market, top_n=5, defensive=defensive),
+        "mom6_top3_def": DualMomentum(market, top_n=3, lookback=126, defensive=defensive),
+        "mom6_top5_def": DualMomentum(market, top_n=5, lookback=126, defensive=defensive),
+        "vol10_def": VolTarget(market, "SPY", 0.10, 20, defensive),
+        "vol12_def": VolTarget(market, "SPY", 0.12, 20, defensive),
+    }
+
+
+# Success criterion, fixed on 2026-11-10 BEFORE the candidates were run (user choice: similar
+# return to buy-and-hold with a smaller drawdown). Changing these after seeing results would be
+# fitting the goal to the answer.
+RETURN_TOLERANCE = 0.01  # CAGR may trail buy-and-hold by at most 1 percentage point
+DRAWDOWN_SHARE = 0.6  # the maximum drawdown may be at most 60% of buy-and-hold's
+
+
+@dataclass(frozen=True, slots=True)
+class Verdict:
+    return_ok: bool
+    risk_ok: bool
+
+    @property
+    def passed(self) -> bool:
+        return self.return_ok and self.risk_ok
+
+
+def judge(candidate: Metrics, benchmark: Metrics) -> Verdict:
+    """Compare two metrics measured over the same window. An unknown value is not a pass."""
+    if candidate.cagr is None or benchmark.cagr is None:
+        return Verdict(False, False)
+    return Verdict(
+        candidate.cagr >= benchmark.cagr - RETURN_TOLERANCE,
+        candidate.max_drawdown >= benchmark.max_drawdown * DRAWDOWN_SHARE,
+    )
 
 
 def rolling_beat_rate(
