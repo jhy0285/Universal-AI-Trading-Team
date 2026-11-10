@@ -151,6 +151,7 @@ Compose는 PostgreSQL을 사용하고 호스트 개발 명령은 `.env`의 DB UR
 | [LLM 설계](docs/llm-provider-design.md) | 전역 설정, 기능 probe, 실패 처리 |
 | [CLI 호환](docs/cli-providers.md) | CLI 8종과 공통 JSON 브리지, 선택 설치와 전역 설정 |
 | [학습 루프](docs/learning-loop.md) | 결정 결과 측정, 모델 신뢰도·보정, 사람이 검토하는 개선 제안 |
+| [미국 주식·ETF 백테스트](docs/equity-backtest.md) | 고정 규칙 전략을 과거 일봉으로 시험하고 SPY 보유와 비교(연구 전용, 주문 없음) |
 | [자동 페이퍼](docs/autonomous-paper.md) | 로컬 CPU 모델, 자동 작업·자료 공급·BOOK·정산·상태 확인 |
 | [무료 시장 관측](docs/market-observer.md) | Jupiter 깊이·Solana 보유자·GeckoTerminal 거래로 채우는 필드, 해석, 비용 |
 | [World Monitor](docs/world-monitor-integration.md) | REST/MCP/SDK 조사와 self-host 조건 |
