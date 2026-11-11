@@ -4,6 +4,8 @@
 정책 해석은 [구현 해석](implementation-decisions.md)에 버전으로 고정돼 있으므로 변경은 사람이 검토하고 적용합니다.
 작은 모의 표본에 맞춰 규칙을 자동 조정하면 과적합이 되고, 원문 전략의 근거도 흐려집니다.
 
+제안을 AI가 재생으로 검증하고 사용자가 승인하는 흐름의 설계는 [개선안 검증 흐름](improvement-verification.md)에 있습니다(미구현).
+
 ## 실행 방식
 
 - worker가 `AUTONOMOUS_ENABLED=true`일 때 매시간 `learning:main`을 실행합니다. 읽기 전용 분석이며 주문·장부를 만들지 않습니다.
