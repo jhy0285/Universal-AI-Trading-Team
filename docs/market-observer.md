@@ -101,6 +101,10 @@ Jupiter와 GeckoTerminal 호출은 자체 간격(키 없이 2.2초)을 두고, J
 
 앱은 RPC 요청에 `User-Agent`만 싣고 `SOLANA_RPC_URL`의 query 키를 거부합니다. 이 클라우드에서는 프록시가 키를 헤더로 붙여 주어 `SOLANA_RPC_URL=https://mainnet.helius-rpc.com`만으로 동작했습니다. 프록시가 없는 환경에서 키 있는 RPC를 쓰려면 앱에 키 헤더 설정을 추가해야 하며 **아직 구현하지 않았습니다**(Jupiter 키가 `x-api-key` 헤더로 가는 방식이 선례).
 
+### 24시간 실측 (2026-11-10~11)
+
+Helius 무료 RPC · 10풀 · 60초로 24시간: 수집 1,388회(중앙값 35.6초), 관측 풀 106개, 판단 3,054건 전부 차단(1위 `STALE_OR_UNKNOWN_MARKET_TIME` 68% = 관측 범위), VET 90건 전부 REJECT, 체결 0. 기록된 Helius 호출은 55,233건(호출당 1크레딧으로 보면 하루 약 5.5만, 한 달이면 문서상 무료 100만을 넘음)이고 DB는 하루 226MB(수집당 약 163KB)였습니다. 표와 다운타임은 [검증 보고서](validation-report.md).
+
 ## 검증 범위
 
 조회 경로와 계산은 모의 HTTP 응답으로 테스트하고, 실제 공개 API로도 실행했습니다. 결과는 [검증 보고서](validation-report.md)에 있습니다.

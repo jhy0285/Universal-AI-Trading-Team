@@ -48,7 +48,8 @@ DATABASE_URL=sqlite:///.state/equity-paper.sqlite3 .venv/bin/trading-team equity
 
 **사용자가 할 일**
 
-1. Neon(neon.tech)이나 Supabase에서 무료 PostgreSQL 프로젝트를 만듭니다. 이 작업에는 하루 한 번만 쓰므로 풀러가 아닌 **직접 연결** 문자열이 단순합니다(`postgresql://사용자:비밀번호@호스트/DB?sslmode=require`). 무료 한도와 비활성 시 일시중지 정책은 바뀔 수 있으니 가입 화면에서 확인하세요.
+1. **Neon(neon.tech) 무료 PostgreSQL을 권장합니다.** 일반 연결 문자열이 이 앱의 드라이버에 그대로 맞고, 계산 자원은 5분 쉬면 꺼지지만 데이터는 남습니다(2026-11 공식 FAQ 기준. 장기 미사용 정책은 확인하지 못했습니다). 풀러가 아닌 **직접 연결** 문자열을 쓰세요(`postgresql://사용자:비밀번호@호스트/DB?sslmode=require`). 한도와 정책은 바뀔 수 있으니 가입 화면에서 확인하세요.
+   Supabase도 되지만 무료 프로젝트는 일주일가량 DB 사용이 거의 없으면 일시중지되고, 직접 연결 주소는 기본이 IPv6라 무료에서는 IPv4용 풀러 주소를 써야 해서 설정이 한 단계 더 듭니다(2026-11 공식 문서 기준).
 2. 연결 문자열은 비밀번호를 담고 있으므로 **채팅에 붙여넣지 마세요.** 클라우드 환경 설정(세션 제목줄의 환경 메뉴 → Edit)의 Network secrets 또는 환경 변수에 `EQUITY_PAPER_DB_URL`이라는 이름으로 저장합니다. 새 세션이나 재시작 뒤에 적용됩니다. 환경이 외부 호스트를 막고 있으면 같은 설정의 Allowed domains에 DB 호스트도 추가합니다.
 3. 저장했다고 알려 주세요.
 
