@@ -18,6 +18,8 @@ from trading_team.equity_paper import (
     _evaluation,
     copy_records,
     digest_of,
+    export_records,
+    import_records,
     is_timely,
     last_complete_day,
     run_once,
@@ -350,3 +352,57 @@ def test_hosted_postgresql_urls_name_the_installed_driver():
     assert normalize_database_url("postgresql://u:p@h/d") == "postgresql+psycopg://u:p@h/d"
     for unchanged in ("postgresql+psycopg://u:p@h/d", "sqlite:///x.sqlite3", "sqlite:///:memory:"):
         assert normalize_database_url(unchanged) == unchanged
+
+
+def test_an_exported_record_file_loads_unchanged_and_can_be_loaded_again(source, db):
+    n = 300
+    run_once(source, fetch=fake(n), now=after_close(last_day(n)))
+    run_once(source, fetch=fake(n + 2), now=after_close(last_day(n + 2)))
+    text = json.dumps(export_records(source))  # what a person would commit as a file
+    assert "postgresql" not in text and "password" not in text.lower()
+    first = import_records(json.loads(text), db)
+    assert first["copied"]["equity_paper_nav"] == 4 and status(db) == status(source)
+    again = import_records(json.loads(text), db)
+    assert not any(again["copied"].values())
+    assert export_records(db) == export_records(source)  # same records, same order
+
+
+def test_a_record_file_that_differs_from_what_is_stored_is_refused(source, db):
+    n = 300
+    run_once(source, fetch=fake(n), now=after_close(last_day(n)))
+    run_once(source, fetch=fake(n + 1), now=after_close(last_day(n + 1)))
+    data = export_records(source)
+    import_records(data, db)
+    changed = json.loads(json.dumps(data))
+    changed["equity_paper_nav"][0]["equity"] = "1"
+    with pytest.raises(EquityPaperError, match="different values"):
+        import_records(changed, db)
+    shorter = json.loads(json.dumps(data))
+    shorter["equity_paper_nav"] = shorter["equity_paper_nav"][:-1]
+    with pytest.raises(EquityPaperError, match="two histories"):
+        import_records(shorter, db)
+
+
+def test_a_malformed_record_file_stops_before_anything_is_written(source, db):
+    run_once(source, fetch=fake(300), now=after_close(last_day(300)))
+    run_once(source, fetch=fake(301), now=after_close(last_day(301)))
+    good = export_records(source)
+    for mutate, message in (
+        (lambda d: d.update(version=2), "not a record file"),
+        (lambda d: d.pop("equity_paper_nav"), "missing list"),
+        (lambda d: d["equity_paper_runs"][0].pop("cost_bps"), "unexpected fields"),
+        (lambda d: d["equity_paper_nav"][0].update(equity="abc"), "equity"),
+        (
+            lambda d: d["equity_paper_decisions"][0].update(recorded_at="2026-11-10T04:27:06"),
+            "zone",
+        ),
+        (lambda d: d["equity_paper_decisions"][0].update(timely="yes"), "true or false"),
+        (lambda d: d["equity_paper_runs"][0].update(description=5), "expected text"),
+    ):
+        bad = json.loads(json.dumps(good))
+        mutate(bad)
+        with pytest.raises(EquityPaperError, match=message):
+            import_records(bad, db)
+    with pytest.raises(EquityPaperError):
+        import_records([], db)
+    assert rows_of(db, EquityPaperRun) == [] and rows_of(db, EquityPaperNav) == []

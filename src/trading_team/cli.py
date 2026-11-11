@@ -123,7 +123,8 @@ def main():
     paper = sub.add_parser(
         "equity-paper", help="forward paper run of the US ETF strategies (no LLM, no orders)"
     )
-    paper.add_argument("action", choices=("run", "status", "copy"))
+    paper.add_argument("action", choices=("run", "status", "copy", "export", "import"))
+    paper.add_argument("file", nargs="?", help="the record file for `import`")
     args = parser.parse_args()
     if args.command == "equity-paper":
         from trading_team import equity_paper
@@ -143,6 +144,12 @@ def main():
                 Base.metadata.create_all(target.engine)
                 result = equity_paper.copy_records(db, target)
                 result["target"] = target.engine.url.render_as_string(hide_password=True)
+            elif args.action == "export":
+                result = equity_paper.export_records(db)
+            elif args.action == "import":
+                if not args.file:
+                    sys.exit("import needs the record file")
+                result = equity_paper.import_records(json.loads(Path(args.file).read_text()), db)
             elif args.action == "run":
                 result = equity_paper.run_once(
                     db,

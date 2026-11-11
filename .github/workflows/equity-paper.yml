@@ -1,0 +1,51 @@
+name: equity-paper-daily
+# Forward paper run of the US ETF strategies. PAPER ONLY: no orders, no wallet, no LLM.
+# The records go to the PostgreSQL in the repository secret EQUITY_PAPER_DB_URL (a direct, not
+# pooled, connection string). The job needs the open internet, which GitHub's runners have and the
+# Claude cloud container does not. See docs/equity-paper.md.
+on:
+  schedule:
+    - cron: "41 22 * * *" # 07:41 KST: after the US close in summer and winter, before the next open
+  workflow_dispatch:
+    inputs:
+      seed_file:
+        description: "Load this record file once before the run (a path in the repo)"
+        required: false
+        default: ""
+permissions:
+  contents: read
+concurrency:
+  group: equity-paper-daily
+  cancel-in-progress: false
+jobs:
+  run:
+    if: github.repository == 'jhy0285/Universal-AI-Trading-Team'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Require the database secret
+        env:
+          DATABASE_URL: ${{ secrets.EQUITY_PAPER_DB_URL }}
+        run: |
+          test -n "$DATABASE_URL" || { echo "::error::the repository secret EQUITY_PAPER_DB_URL is not set"; exit 1; }
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.23"
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Load the seed records (only when asked; never overwrites)
+        if: ${{ inputs.seed_file != '' }}
+        env:
+          DATABASE_URL: ${{ secrets.EQUITY_PAPER_DB_URL }}
+          SEED_FILE: ${{ inputs.seed_file }}
+        run: uv run trading-team equity-paper import "$SEED_FILE"
+      - name: Daily run
+        env:
+          DATABASE_URL: ${{ secrets.EQUITY_PAPER_DB_URL }}
+        run: uv run trading-team equity-paper run
+      - name: Status
+        env:
+          DATABASE_URL: ${{ secrets.EQUITY_PAPER_DB_URL }}
+        run: uv run trading-team equity-paper status

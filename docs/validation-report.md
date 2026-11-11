@@ -29,7 +29,7 @@
 
 ## 모의 운용 기록을 외부 PostgreSQL로 옮기는 도구 — 2026-11-11, UTC
 
-미국 ETF 모의 운용 기록이 컨테이너 디스크에만 있어서(이날 컨테이너가 실제로 재시작됨) 무료 호스팅 PostgreSQL로 옮기는 도구를 만들었습니다([equity-paper](equity-paper.md#무료-postgresql에-쌓기-neon-supabase-등)).
+미국 ETF 모의 운용 기록이 컨테이너 디스크에만 있어서(이날 컨테이너가 실제로 재시작됨) 무료 호스팅 PostgreSQL로 옮기는 도구를 만들었습니다([equity-paper](equity-paper.md#무료-postgresql에-쌓기-neon-github-actions)).
 `trading-team equity-paper copy`(연결 문자열은 환경 변수 `COPY_TARGET_DATABASE_URL`), `postgres://`·`postgresql://` 주소의 자동 변환, 테스트 4건(309건 전체가 SQLite와 PostgreSQL 16에서 통과)을 추가했습니다.
 
 | 확인함 | 방법 |
@@ -38,7 +38,9 @@
 | 값이 다르거나 원본에 없는 행이 있으면 쓰기 전에 멈춤(덮어쓰기와 이력 병합 없음), 중간에 실패해도 대상이 그대로 | 테스트 |
 | 실제 모의 운용 기록(실행 2, 결정 3, 자산 2행)을 로컬 임시 PostgreSQL 16으로 복사한 뒤 `equity-paper status`가 원본과 바이트 단위로 같음 | 실행 |
 
-**검증하지 못한 것:** 실제 호스팅 서비스(Neon, Supabase)에 연결해 보지 못했습니다(사용자가 만든 DB와 연결 문자열이 아직 없음). 이 컨테이너에서 그 서비스의 DB 포트로 나갈 수 있는지도 모릅니다: 네트워크 경로를 미리 점검하려던 명령은 자동 분류기가 거부해 실행하지 않았고, 우회하지 않았습니다. 막혀 있으면 HTTPS 기반의 다른 방법이 필요합니다.
+**같은 날 후속:** 사용자가 Neon DB를 만들고 연결 문자열을 환경에 저장했지만, **이 컨테이너에서 연결하면 `failed to resolve host`로 실패했습니다**(인터넷이 HTTP/HTTPS 프록시 전용이라 Postgres 연결은 주소를 못 찾음. 같은 주소에 HTTPS로는 응답이 왔고 비밀번호는 보내지 않았습니다). 그래서 매일 실행을 GitHub Actions로 옮기고(`.github/workflows/equity-paper.yml`), 컨테이너에서 DB에 못 닿아도 기록을 옮길 수 있게 `equity-paper export`·`import`(비밀 없는 JSON, 테스트 3건 추가로 총 312건)와 시작 기록 `records/equity-paper-seed.json`을 추가했습니다. 내보낸 파일을 다른 DB에 가져온 뒤 `status`가 원본과 바이트 단위로 같음을 확인했습니다.
+
+**검증하지 못한 것:** 실제 Neon 연결, GitHub 러너에서 Yahoo 일봉이 막히지 않는지, 예약 실행이 제때 도는지(첫 `Run workflow` 로그로 확인할 예정). 앞서 실제 호스팅 서비스(Neon, Supabase)에 연결해 보지 못했다고 쓴 부분의 원인은 위와 같습니다(사용자가 만든 DB와 연결 문자열이 아직 없음). 이 컨테이너에서 그 서비스의 DB 포트로 나갈 수 있는지도 모릅니다: 네트워크 경로를 미리 점검하려던 명령은 자동 분류기가 거부해 실행하지 않았고, 우회하지 않았습니다. 막혀 있으면 HTTPS 기반의 다른 방법이 필요합니다.
 기록 시각은 앱이 적은 값이며 DB 서버가 찍은 시각이 아닙니다.
 
 ## 키 있는 Solana RPC(Helius 무료)로 관측 풀 10개 · 60초 실행 — 2026-11-09, UTC

@@ -56,7 +56,7 @@
 0. 미국 주식·ETF(2026-11-10 사용자 결정: 밈코인 다음으로 시장을 넓히되 이쪽을 먼저, 개선은 반자동). docs/equity-backtest.md와 handoff의 0번 항목을 먼저 읽는다.
    성공 기준은 "SPY 보유와 비슷한 수익 + 낙폭 40% 이상 축소"로 고정돼 있고, 선택된 mom12_top5_def는 검증 구간(2020~)에서 근소하게 미달했다(검증 구간은 이미 열렸으니 재사용 금지).
    2026-11-10에 일봉 실시간 모의 운용을 연결했다(docs/equity-paper.md, `trading-team equity-paper run|status`, 새 테이블 3개, 결정은 불변·시각·데이터 해시 기록).
-   매일 run을 돌려야 하고, 기록이 컨테이너 디스크에만 있어 회수되면 사라진다 → 장기 운용은 사용자 PC·서버로 옮길 것. 사용자가 Neon 무료 PostgreSQL의 직접 연결 문자열을 환경 변수 `EQUITY_PAPER_DB_URL`로 저장하면(docs/equity-paper.md '무료 PostgreSQL에 쌓기'), `equity-paper copy`로 옮기고 두 DB의 status가 같은지 본 뒤 매일 실행 예약 작업의 DATABASE_URL을 그쪽으로 바꾼다(값은 출력하지 않는다). 판정은 1년·SPY 낙폭 15% 이상일 때만.
+   매일 run을 돌려야 하고, 기록이 컨테이너 디스크에만 있어 회수되면 사라진다 → 장기 운용은 사용자 PC·서버로 옮길 것. 이 컨테이너는 Postgres에 직접 연결할 수 없어(프록시 전용) 매일 실행을 GitHub Actions(.github/workflows/equity-paper.yml)로 옮겼다. 사용자가 저장소 비밀 값 EQUITY_PAPER_DB_URL(Neon 직접 연결 문자열)을 넣으면 Actions에서 seed_file=records/equity-paper-seed.json 으로 첫 실행을 하고(docs/equity-paper.md), 로그로 Neon 연결과 Yahoo 접근을 확인한 뒤 이 컨테이너의 예약 작업(trig_01GSdAc8okfyfuHbiFhMyoDd)을 끈다. 값은 출력하지 않는다. 판정은 1년·SPY 낙폭 15% 이상일 때만.
    LLM 판단은 과거 백테스트로 평가하지 않는다(미래 정보 누수). 실시간 기록이 쌓인 뒤 앞으로의 데이터로만 시험한다.
    국내 ETF 백테스트(docs/equity-backtest-kr.md): 사전 등록 → 1회 실행, 통과 후보 0개, 검증 구간은 열지 않았다(깨끗함). 후보 추가·매개변수 변경은 시험 횟수 증가이므로 사용자 승인과 기록이 필요하다. 다음 시장은 BTC·ETH·SOL(24시간 거래라 엔진의 달력 규칙을 먼저 손봐야 함).
 1. 최신 main에서 시작한다(PR #1·#2는 병합됨). main이 앞서 나가면 rebase·force push 대신 main을 merge한다. 병합은 사용자가 승인했을 때만 한다.
