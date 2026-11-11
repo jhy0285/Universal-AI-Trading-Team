@@ -35,7 +35,7 @@
   수집 오류 0, ONCHAIN_UNAVAILABLE 0, 수집 중앙값 30.7초(건너뜀 0), 모델에 닿은 풀 7개(VET 19회)였고 Sonnet이 19건을 모두 REJECT(승률 0.30~0.44, 기대수익 −5%~−1%), 체결 0.
   체결 0은 이제 자료가 아니라 시장·전략 결과로 보인다. Alchemy 무료는 getProgramAccounts가 429로 막혀 쓸 수 없었다(자세한 표는 docs/validation-report.md).
   24시간 실행(2026-11-10~11)을 마쳤다: 수집 1,388회, 판단 3,054건 전부 차단(1위 STALE_OR_UNKNOWN_MARKET_TIME 68% = 관측 범위), VET 90건 전부 REJECT, 체결 0(docs/validation-report.md).
-  다음 결정: 관측 범위(MARKET_OBSERVER_MAX_ASSETS)를 넓힐지. 넓히면 Helius 크레딧도 는다(지금 속도로 월 무료 100만 초과). 다만 gate_regret상 차단 후보의 1시간 뒤 평균이 −2.5%~−4.2%(문턱 4.9%)라 보류를 권고한다(사용자와 확정 필요). 결과는 scripts/run_summary.py 로 본다.
+  다음 결정: 관측 범위(MARKET_OBSERVER_MAX_ASSETS)를 넓힐지. 넓히면 Helius 크레딧도 는다(지금 속도로 월 무료 100만 초과). 다만 gate_regret상 차단 후보의 1시간 뒤 평균이 −2.5%~−4.2%(문턱 4.9%)라 보류를 권고한다. 외부 캔들(scripts/forward_from_candles.py)로 결정 2,758건을 다시 재도 6시간 뒤 중앙값이 −3%~−7%로 일관했고 앱의 6시간 뒤 +30%는 생존 편향으로 재현되지 않았다. 며칠 더 돌리기·범위 확대는 보류가 기본값이다(사용자가 원하면 변경). 결과는 scripts/run_summary.py 로 본다.
   Jupiter·Helius 키는 이 세션 환경에 request_credential로 저장돼 있다(값은 모른다). 앱에는 JUPITER_API_KEY=proxy-injected 자리표시와 키 없는 SOLANA_RPC_URL만 넘기면 프록시가 진짜 키를 헤더로 붙인다.
   한계: 앱은 RPC에 키 헤더를 보내지 않고 URL의 키도 거부한다. 프록시가 없는 환경에서 Helius를 쓰려면 앱에 RPC 키 헤더 설정(미구현)이 필요하다.
   주된 차단 사유: 최대 보유자 5% 초과, 보유자보다 가격이 빨리 오름, 어린 pair 유동성 감소, 상위 보유자 매도,
