@@ -1,0 +1,71 @@
+{
+  "paper_only": true,
+  "version": 1,
+  "equity_paper_runs": [
+    {
+      "strategy": "mom12_top5_def",
+      "description": "12-1 month momentum, top 5 of 16 ETFs, positive momentum only, empty slots in SHY (chosen 2026-11-10 on 2001-2019; narrowly missed the 2020-2026 hold-out)",
+      "start_day": "2026-11-09",
+      "initial_cash": "10000",
+      "cost_bps": "5.0",
+      "created_at": "2026-11-10T04:27:59.263786+00:00"
+    },
+    {
+      "strategy": "spy_buy_hold",
+      "description": "benchmark: buy and hold SPY",
+      "start_day": "2026-11-09",
+      "initial_cash": "10000",
+      "cost_bps": "5.0",
+      "created_at": "2026-11-10T04:27:59.271757+00:00"
+    }
+  ],
+  "equity_paper_decisions": [
+    {
+      "strategy": "mom12_top5_def",
+      "data_through": "2026-11-09",
+      "kind": "initial",
+      "weights": "{\"EEM\": \"0.2\", \"QQQ\": \"0.2\", \"XLE\": \"0.2\", \"XLK\": \"0.2\", \"XLV\": \"0.2\"}",
+      "recorded_at": "2026-11-10T04:27:06.058571+00:00",
+      "timely": true,
+      "data_digest": "700d6b05a50f8cd84ed9e9ad85cd253dcbe6a246759bcc04b83e076498f839d2"
+    },
+    {
+      "strategy": "spy_buy_hold",
+      "data_through": "2026-11-09",
+      "kind": "initial",
+      "weights": "{\"SPY\": \"1.0\"}",
+      "recorded_at": "2026-11-10T04:27:06.058571+00:00",
+      "timely": true,
+      "data_digest": "700d6b05a50f8cd84ed9e9ad85cd253dcbe6a246759bcc04b83e076498f839d2"
+    },
+    {
+      "strategy": "spy_buy_hold",
+      "data_through": "2026-11-10",
+      "kind": "rule",
+      "weights": "{\"SPY\": \"1.0\"}",
+      "recorded_at": "2026-11-10T22:42:11.149161+00:00",
+      "timely": true,
+      "data_digest": "fbd984552bac45df386efdb5d07e7bea3a8987ea5447cc5f733c9c25a068a530"
+    }
+  ],
+  "equity_paper_nav": [
+    {
+      "strategy": "mom12_top5_def",
+      "day": "2026-11-10",
+      "equity": "10055.921374",
+      "holdings": "{\"EEM\": \"1996.034120\", \"QQQ\": \"2005.568782\", \"XLE\": \"2043.006249\", \"XLK\": \"2001.725824\", \"XLV\": \"2009.586400\"}",
+      "pending": null,
+      "recorded_at": "2026-11-10T22:42:11.149161+00:00",
+      "data_digest": "fbd984552bac45df386efdb5d07e7bea3a8987ea5447cc5f733c9c25a068a530"
+    },
+    {
+      "strategy": "spy_buy_hold",
+      "day": "2026-11-10",
+      "equity": "10021.459214",
+      "holdings": "{\"SPY\": \"10021.459214\"}",
+      "pending": "{\"SPY\": \"1.0\"}",
+      "recorded_at": "2026-11-10T22:42:11.149161+00:00",
+      "data_digest": "fbd984552bac45df386efdb5d07e7bea3a8987ea5447cc5f733c9c25a068a530"
+    }
+  ]
+}

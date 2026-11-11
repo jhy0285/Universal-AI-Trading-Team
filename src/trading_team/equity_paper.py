@@ -19,7 +19,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import Boolean, select
 
 from trading_team.domain import utcnow
 from trading_team.equity_backtest import (
@@ -44,6 +44,8 @@ from trading_team.storage import (
     EquityPaperDecision,
     EquityPaperNav,
     EquityPaperRun,
+    ExactDecimal,
+    UTCDateTime,
 )
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -319,33 +321,35 @@ def run_once(
     return report
 
 
-def copy_records(source: Database, target: Database) -> dict:
-    """Move the forward-run records to another database (for example a hosted PostgreSQL).
+_TABLES = (
+    (EquityPaperRun, lambda r: r.strategy),
+    (EquityPaperDecision, lambda r: (r.strategy, r.data_through)),
+    (EquityPaperNav, lambda r: (r.strategy, r.day)),
+)
+RECORDS_VERSION = 1
 
-    Records are evidence, so this never overwrites and never merges two histories. The target must
-    hold nothing, or only rows that are identical to the source's (a copy that is repeated, or
-    topped up with the days recorded since). A row that differs, or a row the source does not have,
-    stops everything before anything is written. The recorded time, the data digest and the
-    `timely` flag are copied as they are, so the proof that a decision came first survives the move.
+
+def _values(row) -> dict:
+    # `id` is only a counter of the database that assigned it, not part of the record.
+    return {c.name: getattr(row, c.name) for c in row.__table__.columns if c.name != "id"}
+
+
+def _read_all(db: Database) -> dict:
+    with db.transaction() as session:
+        return {model: list(session.scalars(select(model)).all()) for model, _ in _TABLES}
+
+
+def _write_missing(rows: dict, target: Database) -> dict:
+    """Add the rows the target lacks, never overwriting and never merging two histories.
+
+    The target must hold nothing, or only rows identical to the given ones (a copy that is repeated,
+    or topped up with the days recorded since). A row that differs, or a row the given set does not
+    have, stops everything before anything is written.
     """
-    tables = (
-        (EquityPaperRun, lambda r: r.strategy),
-        (EquityPaperDecision, lambda r: (r.strategy, r.data_through)),
-        (EquityPaperNav, lambda r: (r.strategy, r.day)),
-    )
-
-    def values(row) -> dict:
-        # `id` is only a counter of the database that assigned it, not part of the record.
-        return {c.name: getattr(row, c.name) for c in row.__table__.columns if c.name != "id"}
-
-    def read(db: Database, model) -> list:
-        with db.transaction() as session:
-            return list(session.scalars(select(model)).all())
-
     plan = []
-    for model, key in tables:
-        mine = {key(r): r for r in read(source, model)}
-        theirs = {key(r): r for r in read(target, model)}
+    for model, key in _TABLES:
+        mine = {key(r): r for r in rows[model]}
+        theirs = {key(r): r for r in _read_all(target)[model]}
         name = model.__tablename__
         extra = sorted(str(k) for k in theirs if k not in mine)
         if extra:
@@ -353,7 +357,7 @@ def copy_records(source: Database, target: Database) -> dict:
                 f"{name}: the target already has records the source lacks {extra[:3]}; two"
                 " histories are never merged"
             )
-        differing = sorted(str(k) for k, r in theirs.items() if values(r) != values(mine[k]))
+        differing = sorted(str(k) for k, r in theirs.items() if _values(r) != _values(mine[k]))
         if differing:
             raise EquityPaperError(
                 f"{name}: the target holds different values for {differing[:3]}; nothing is"
@@ -365,11 +369,83 @@ def copy_records(source: Database, target: Database) -> dict:
     with target.transaction() as session:  # all or nothing
         for model, missing, present in plan:
             # Source order (id order for decisions) so the target numbers them the same way.
-            for row in sorted(missing, key=lambda r: getattr(r, "id", 0)):
-                session.add(model(**values(row)))
+            for row in sorted(missing, key=lambda r: getattr(r, "id", None) or 0):
+                session.add(model(**_values(row)))
             copied[model.__tablename__] = len(missing)
             already[model.__tablename__] = present
     return {"paper_only": True, "copied": copied, "already_present": already}
+
+
+def copy_records(source: Database, target: Database) -> dict:
+    """Move the forward-run records to another database (for example a hosted PostgreSQL).
+
+    Records are evidence, so this never overwrites and never merges two histories (see
+    `_write_missing`). The recorded time, the data digest and the `timely` flag are copied as they
+    are, so the proof that a decision came first survives the move.
+    """
+    return _write_missing(_read_all(source), target)
+
+
+def export_records(db: Database) -> dict:
+    """The records as plain JSON-able data (no secrets), for a database the caller cannot reach."""
+    out: dict = {"paper_only": True, "version": RECORDS_VERSION}
+    rows = _read_all(db)
+    for model, key in _TABLES:
+        items = []
+        for row in sorted(rows[model], key=key):
+            item = {}
+            for name, value in _values(row).items():
+                item[name] = (
+                    str(value)
+                    if isinstance(value, Decimal)
+                    else value.isoformat()
+                    if isinstance(value, datetime)
+                    else value
+                )
+            items.append(item)
+        out[model.__tablename__] = items
+    return out
+
+
+def _row_from_json(model, item: object):
+    if not isinstance(item, dict):
+        raise EquityPaperError(f"{model.__tablename__}: every record must be an object")
+    columns = {c.name: c for c in model.__table__.columns if c.name != "id"}
+    if set(item) != set(columns):
+        raise EquityPaperError(
+            f"{model.__tablename__}: unexpected fields {sorted(set(item) ^ set(columns))}"
+        )
+    values = {}
+    for name, column in columns.items():
+        value = item[name]
+        try:
+            if isinstance(column.type, ExactDecimal):
+                value = Decimal(value)
+            elif isinstance(column.type, UTCDateTime):
+                value = datetime.fromisoformat(value)
+                if value.tzinfo is None:
+                    raise ValueError("timestamp without a time zone")
+            elif isinstance(column.type, Boolean) and not isinstance(value, bool):
+                raise ValueError("expected true or false")
+            elif value is not None and not isinstance(value, str) and not isinstance(value, bool):
+                raise ValueError("expected text")
+        except (ValueError, TypeError, ArithmeticError) as exc:
+            raise EquityPaperError(f"{model.__tablename__}.{name}: {exc}") from None
+        values[name] = value
+    return model(**values)
+
+
+def import_records(data: object, target: Database) -> dict:
+    """Load records made by `export_records`, under the same no-overwrite rules as a copy."""
+    if not isinstance(data, dict) or data.get("version") != RECORDS_VERSION:
+        raise EquityPaperError("not a record file this version can read")
+    rows = {}
+    for model, _ in _TABLES:
+        items = data.get(model.__tablename__)
+        if not isinstance(items, list):
+            raise EquityPaperError(f"{model.__tablename__}: missing list of records")
+        rows[model] = [_row_from_json(model, item) for item in items]
+    return _write_missing(rows, target)
 
 
 def _evaluation(days: list[date], mine: list[float], theirs: list[float]) -> dict:
