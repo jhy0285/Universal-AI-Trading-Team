@@ -16,6 +16,7 @@ from trading_team.equity_paper import (
     SYMBOLS,
     EquityPaperError,
     _evaluation,
+    copy_records,
     digest_of,
     is_timely,
     last_complete_day,
@@ -23,7 +24,14 @@ from trading_team.equity_paper import (
     status,
     yahoo_fetcher,
 )
-from trading_team.storage import EquityPaperDecision, EquityPaperNav, EquityPaperRun
+from trading_team.storage import (
+    Base,
+    Database,
+    EquityPaperDecision,
+    EquityPaperNav,
+    EquityPaperRun,
+    normalize_database_url,
+)
 
 START = date(2024, 1, 1)  # a Monday
 BENCH, MOM = "spy_buy_hold", "mom12_top5_def"
@@ -253,3 +261,92 @@ def test_the_fetcher_identifies_itself_backs_off_on_429_and_never_trusts_a_bad_r
         yahoo_fetcher(get=boom, sleep=lambda s: None)("SPY")
     with pytest.raises(EquityPaperError):
         yahoo_fetcher(get=lambda *a, **k: response(429), sleep=lambda s: None)("SPY")
+
+
+@pytest.fixture
+def source(tmp_path):
+    database = Database(f"sqlite:///{tmp_path}/source.sqlite3")
+    Base.metadata.create_all(database.engine)
+    yield database
+    database.engine.dispose()
+
+
+def rows_of(database, model):
+    with database.transaction() as session:
+        return [
+            {c.name: getattr(r, c.name) for c in r.__table__.columns if c.name != "id"}
+            for r in session.scalars(select(model))
+        ]
+
+
+def test_copying_moves_every_record_unchanged_and_can_be_repeated_and_topped_up(source, db):
+    n = 300
+    run_once(source, fetch=fake(n), now=after_close(last_day(n)))
+    run_once(source, fetch=fake(n + 2), now=after_close(last_day(n + 2)))
+    first = copy_records(source, db)
+    assert first["copied"] == {
+        "equity_paper_runs": 2,
+        "equity_paper_decisions": len(rows_of(source, EquityPaperDecision)),
+        "equity_paper_nav": 4,
+    }
+    for model in (EquityPaperRun, EquityPaperDecision, EquityPaperNav):
+        key = {EquityPaperRun: "strategy", EquityPaperDecision: "data_through"}.get(model, "day")
+        assert sorted(rows_of(source, model), key=lambda r: (r["strategy"], r[key])) == sorted(
+            rows_of(db, model), key=lambda r: (r["strategy"], r[key])
+        )
+    assert status(db) == status(source)  # the recorded time and the digests came along
+    again = copy_records(source, db)
+    assert not any(again["copied"].values()) and again["already_present"]["equity_paper_nav"] == 4
+    run_once(source, fetch=fake(n + 3), now=after_close(last_day(n + 3)))
+    top_up = copy_records(source, db)
+    assert top_up["copied"]["equity_paper_nav"] == 2 and status(db) == status(source)
+
+
+def test_copying_never_overwrites_or_merges_and_writes_nothing_when_it_stops(source, db):
+    n = 300
+    run_once(source, fetch=fake(n), now=after_close(last_day(n)))
+    run_once(source, fetch=fake(n + 1), now=after_close(last_day(n + 1)))
+    copy_records(source, db)
+    before = {m: rows_of(db, m) for m in (EquityPaperRun, EquityPaperDecision, EquityPaperNav)}
+    with db.transaction() as session:  # a target value that differs from the source's
+        session.get(EquityPaperNav, (BENCH, last_day(n + 1).isoformat())).equity = 1
+    with pytest.raises(EquityPaperError, match="different values"):
+        copy_records(source, db)
+    with db.transaction() as session:
+        session.get(EquityPaperNav, (BENCH, last_day(n + 1).isoformat())).equity = next(
+            r["equity"]
+            for r in before[EquityPaperNav]
+            if r["strategy"] == BENCH and r["day"] == last_day(n + 1).isoformat()
+        )
+    run_once(db, fetch=fake(n + 2), now=after_close(last_day(n + 2)))  # the target moved on alone
+    with pytest.raises(EquityPaperError, match="two histories"):
+        copy_records(source, db)
+    run_once(source, fetch=fake(n + 3), now=after_close(last_day(n + 3)))
+    with pytest.raises(EquityPaperError):  # a missing day in the target is no reason to merge
+        copy_records(source, db)
+    assert len(rows_of(db, EquityPaperNav)) == len(before[EquityPaperNav]) + 2
+
+
+def test_a_failed_copy_leaves_the_target_untouched(source, db):
+    n = 300
+    run_once(source, fetch=fake(n), now=after_close(last_day(n)))
+    with db.transaction() as session:  # the target already holds a run the source does not have
+        session.add(
+            EquityPaperRun(
+                strategy="other", description="x", start_day="2024-01-01",
+                initial_cash=1, cost_bps=5,
+            )
+        )  # fmt: skip
+    with pytest.raises(EquityPaperError):
+        copy_records(source, db)
+    assert [r["strategy"] for r in rows_of(db, EquityPaperRun)] == ["other"]
+    assert rows_of(db, EquityPaperDecision) == [] and rows_of(db, EquityPaperNav) == []
+
+
+def test_hosted_postgresql_urls_name_the_installed_driver():
+    assert normalize_database_url("postgres://u:p@h/d?sslmode=require") == (
+        "postgresql+psycopg://u:p@h/d?sslmode=require"
+    )
+    assert normalize_database_url("postgresql://u:p@h/d") == "postgresql+psycopg://u:p@h/d"
+    for unchanged in ("postgresql+psycopg://u:p@h/d", "sqlite:///x.sqlite3", "sqlite:///:memory:"):
+        assert normalize_database_url(unchanged) == unchanged

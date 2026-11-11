@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import sys
 import uuid
 from pathlib import Path
 
@@ -121,7 +123,7 @@ def main():
     paper = sub.add_parser(
         "equity-paper", help="forward paper run of the US ETF strategies (no LLM, no orders)"
     )
-    paper.add_argument("action", choices=("run", "status"))
+    paper.add_argument("action", choices=("run", "status", "copy"))
     args = parser.parse_args()
     if args.command == "equity-paper":
         from trading_team import equity_paper
@@ -130,8 +132,18 @@ def main():
         settings = Settings()
         db = Database(settings.database_url)
         Base.metadata.create_all(db.engine)  # tables only: this never creates the main account
+        target = None
         try:
-            if args.action == "run":
+            if args.action == "copy":
+                # The target holds a password, so it comes from the environment, never from argv.
+                url = os.environ.get("COPY_TARGET_DATABASE_URL")
+                if not url:
+                    sys.exit("copy needs COPY_TARGET_DATABASE_URL (the database to copy into)")
+                target = Database(url)
+                Base.metadata.create_all(target.engine)
+                result = equity_paper.copy_records(db, target)
+                result["target"] = target.engine.url.render_as_string(hide_password=True)
+            elif args.action == "run":
                 result = equity_paper.run_once(
                     db,
                     fetch=equity_paper.yahoo_fetcher(),
@@ -142,6 +154,8 @@ def main():
                 result = equity_paper.status(db)
         finally:
             db.engine.dispose()
+            if target is not None:
+                target.engine.dispose()
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
         return
     if args.command == "providers":
