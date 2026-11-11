@@ -460,3 +460,44 @@ def test_snapshot_retention_cannot_cut_the_learning_window():
     )
     with pytest.raises(ValidationError):
         Settings(_env_file=None, snapshot_retention_days=needed - 1)
+
+
+def test_a_sample_made_mostly_of_survivors_is_reported_but_not_sufficient(db, snapshot):
+    now = utcnow()
+    seed_moves(db, snapshot, "SCAN_LIQUIDITY", assets=6, per_asset=6, move="0.10", now=now)
+    alone = learning.evaluate(db, ACCOUNT, now)["gate_regret"][0]["horizons"]["86400"]
+    assert alone["missing"] == 0 and D(alone["coverage"]) == 1 and alone["sufficient"]
+    # 40 more rejections whose pools were never observed again (collapsed or delisted): they
+    # have no later price, so the 36 that do are survivors, not the whole picture.
+    broker = PaperBroker(db)
+    decided = now - timedelta(days=2)
+    with db.transaction() as s:
+        for k in range(40):
+            gone = snapshot.model_copy(
+                update=dict(
+                    asset_id=f"solana:GONE{k % 8}",
+                    fetched_at=decided,
+                    observed_at=decided,
+                    buy_quote=None,
+                    sell_quote=None,
+                    price=D(100) + k,
+                )
+            )
+            broker.save_snapshot(gone)
+            s.add(
+                Decision(
+                    cycle_id="c",
+                    account_id=ACCOUNT,
+                    asset_id=gone.asset_id,
+                    snapshot_id=gone.digest,
+                    allowed=False,
+                    reason="SCAN_LIQUIDITY",
+                    created_at=decided,
+                )
+            )
+    report = learning.evaluate(db, ACCOUNT, now)
+    day = report["gate_regret"][0]["horizons"]["86400"]
+    assert day["n"] == 36 and day["missing"] == 40 and D(day["coverage"]) < D("0.5")
+    assert D(day["mean"]) == D("0.1") and not day["sufficient"]
+    found = {x["key"] for x in learning.derive_proposals(report)}
+    assert "gate-review:0:SCAN_LIQUIDITY" not in found  # no threshold review on survivors alone
