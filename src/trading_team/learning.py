@@ -41,6 +41,10 @@ DECISION_LIMIT = 1500
 CHUNK = 100
 MIN_SAMPLES = 30
 MIN_ASSETS = 5
+# A later price exists only if the same pool was observed again, so pools that collapsed or lost
+# liquidity drop out of the sample (survivor bias; docs/validation-report.md, 2026-11-11). Below this
+# share of matured decisions with a later price, a horizon is reported but never called sufficient.
+MIN_COVERAGE = D("0.5")
 MIN_RESOLVED = 20
 # A price move that only pays the round trip at the policy's own fee and slippage caps.
 HURDLE = 2 * (FEE_RATE + SLIPPAGE_CAP)
@@ -164,18 +168,28 @@ def _later(s, asset_id: str, provenance: str, pair_id, target: datetime, horizon
     return None
 
 
-def _summary(samples: list[tuple[str, Decimal]]) -> dict:
+def _summary(samples: list[tuple[str, Decimal]], missing: int = 0) -> dict:
+    """`missing` counts matured decisions whose pool had no later snapshot: they are not in the
+    sample, and if they are many the sample is mostly the survivors."""
     values = [x[1] for x in samples]
     assets = {x[0] for x in samples}
+    coverage = _ratio(len(values), len(values) + missing)
     if not values:
-        return {"n": 0, "assets": 0, "mean": None, "median": None, "hit_rate": None}
+        return {
+            "n": 0, "assets": 0, "mean": None, "median": None, "hit_rate": None,
+            "missing": missing, "coverage": coverage,
+        }  # fmt: skip
     return {
+        "missing": missing,
+        "coverage": coverage,
         "n": len(values),
         "assets": len(assets),
         "mean": q(sum(values) / len(values)),
         "median": q(median(values)),
         "hit_rate": _ratio(sum(v > HURDLE for v in values), len(values)),
-        "sufficient": len(values) >= MIN_SAMPLES and len(assets) >= MIN_ASSETS,
+        "sufficient": len(values) >= MIN_SAMPLES
+        and len(assets) >= MIN_ASSETS
+        and D(coverage) >= MIN_COVERAGE,
     }
 
 
@@ -191,7 +205,11 @@ def gate_regret(db: Database, account: Account, since: datetime, now: datetime) 
             )
         )
     groups: dict[tuple[bool, str], dict] = defaultdict(
-        lambda: {"decisions": 0, "returns": {h: [] for h in HORIZONS}}
+        lambda: {
+            "decisions": 0,
+            "returns": {h: [] for h in HORIZONS},
+            "missing": dict.fromkeys(HORIZONS, 0),
+        }
     )
     cache: dict = {}
     for start in range(0, len(decisions), CHUNK):
@@ -212,13 +230,17 @@ def gate_regret(db: Database, account: Account, since: datetime, now: datetime) 
                     )
                     if later is not None:
                         group["returns"][horizon].append((decision.asset_id, later / price - 1))
+                    else:
+                        group["missing"][horizon] += 1
     return sorted(
         (
             {
                 "allowed": allowed,
                 "reason": reason,
                 "decisions": group["decisions"],
-                "horizons": {str(h): _summary(group["returns"][h]) for h in HORIZONS},
+                "horizons": {
+                    str(h): _summary(group["returns"][h], group["missing"][h]) for h in HORIZONS
+                },
             }
             for (allowed, reason), group in groups.items()
         ),
