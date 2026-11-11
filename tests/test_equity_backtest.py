@@ -464,3 +464,53 @@ def test_only_a_lone_spike_is_suspect_and_the_reference_is_never_judged():
     assert suspect_days(lone, short) == (lone.bars[11].day,)  # day 10 is unknown: not flagged
     left = without_days(lone, suspect_days(lone, reference))
     assert len(left.bars) == len(lone.bars) - 2 and left.dropped == lone.dropped
+
+
+def daily(symbol: str, days, closes) -> Series:
+    """Bars on every calendar day, like a market that never closes."""
+    return Series(symbol, tuple(Bar(d, c, c) for d, c in zip(days, closes, strict=True)), 0)
+
+
+def test_the_crypto_profile_trades_every_day_in_cash_with_its_own_candidates():
+    from trading_team.equity_backtest import CALENDAR_DAYS, build_market, crypto_candidates
+    from trading_team.equity_markets import CRYPTO, PROFILES
+
+    assert PROFILES["crypto"] is CRYPTO and CRYPTO.defensive is None
+    assert CRYPTO.symbols == ("BTC-USD", "ETH-USD", "SOL-USD")  # no defensive asset to download
+    assert CRYPTO.periods_per_year == CALENDAR_DAYS == 365 and CRYPTO.data_end is not None
+    assert CRYPTO.dev_end < CRYPTO.holdout_start and CRYPTO.cost_bps < CRYPTO.robust_cost_bps
+    start = date(2020, 1, 1)
+    days = [start + timedelta(days=k) for k in range(500)]
+    market = build_market(
+        {s: daily(s, days, [100.0 + k * (1 + j) for k in range(500)])
+         for j, s in enumerate(CRYPTO.universe)},
+        CRYPTO.reference,
+    )  # fmt: skip
+    listed = crypto_candidates(market, symbol=CRYPTO.reference, universe=CRYPTO.universe)
+    assert set(listed) == {"trend200", "trend100", "mom12_top1", "mom12_top2", "mom6_top1",
+                           "mom6_top2", "vol40", "vol60"}  # fmt: skip
+    assert listed["mom12_top1"].name.startswith("momentum top1 of 3 (12-1m")
+    assert listed["mom6_top2"].name.startswith("momentum top2 of 3 (6-1m")
+    picks = listed["mom12_top1"].target(400)
+    assert picks == {"SOL-USD": 1.0}  # the fastest riser, alone; nothing defensive to fill
+
+
+def test_annualising_over_365_days_scales_volatility_and_sharpe_but_not_returns():
+    from trading_team.equity_backtest import compute_metrics
+
+    days = [date(2021, 1, 1) + timedelta(days=k) for k in range(200)]
+    equity = [1.0 + 0.002 * k + (0.01 if k % 3 else -0.01) for k in range(200)]
+    a = compute_metrics(days, equity)
+    b = compute_metrics(days, equity, periods_per_year=365)
+    assert a.cagr == b.cagr and a.max_drawdown == b.max_drawdown
+    assert b.volatility == pytest.approx(a.volatility * (365 / 252) ** 0.5)
+    assert b.sharpe == pytest.approx(a.sharpe * (365 / 252) ** 0.5)
+
+
+def test_a_fixed_end_leaves_out_the_day_in_progress():
+    from trading_team.equity_backtest import through
+
+    days = [date(2026, 11, 8) + timedelta(days=k) for k in range(4)]
+    one = daily("BTC-USD", days, [1.0, 2.0, 3.0, 4.0])
+    cut = through(one, date(2026, 11, 10))
+    assert [b.day for b in cut.bars] == days[:3] and cut.dropped == one.dropped

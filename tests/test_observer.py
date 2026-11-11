@@ -498,3 +498,24 @@ async def test_cycle_records_the_screen_reason_not_a_stale_price(db, settings, m
         await desk.close()
     assert [x["reason"] for x in result["decisions"]] == ["CONCENTRATION_OVER_5_PERCENT"]
     assert model.schemas.count("ScanOutput") == 1  # The probe only; no SCAN or VET call.
+
+
+def test_more_than_ten_pools_needs_the_key_and_room_in_the_interval(tmp_path):
+    from pydantic import ValidationError
+
+    from trading_team.settings import Settings
+
+    base = {"_env_file": None, "llm_provider": "ollama", "llm_model": "fixture-model",
+            "state_dir": tmp_path / "state"}  # fmt: skip
+    ok = Settings(**base, market_observer_max_assets=15, autonomous_collect_seconds=90,
+                  jupiter_api_key="free-key")  # fmt: skip
+    assert ok.market_observer_max_assets == 15
+    assert Settings(**base, market_observer_max_assets=10, autonomous_collect_seconds=60)
+    with pytest.raises(ValidationError, match="at least 90"):
+        Settings(**base, market_observer_max_assets=15, autonomous_collect_seconds=60,
+                 jupiter_api_key="free-key")  # fmt: skip
+    with pytest.raises(ValidationError, match="JUPITER_API_KEY"):
+        Settings(**base, market_observer_max_assets=15, autonomous_collect_seconds=90)
+    with pytest.raises(ValidationError):
+        Settings(**base, market_observer_max_assets=21, autonomous_collect_seconds=900,
+                 jupiter_api_key="free-key")  # fmt: skip

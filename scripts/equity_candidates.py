@@ -25,24 +25,25 @@ from backtest_equities import fetch, pct
 from trading_team.equity_backtest import (
     DRAWDOWN_SHARE,
     RETURN_TOLERANCE,
-    TRADING_DAYS,
     BuyAndHold,
     Metrics,
     Result,
     build_market,
     candidates,
+    crypto_candidates,
     judge,
     parse_yahoo_chart,
     run_backtest,
     subperiod,
     suspect_days,
+    through,
     without_days,
 )
 from trading_team.equity_markets import PROFILES
 
 
-def window(result: Result, start: date | None, end: date | None) -> Metrics:
-    return subperiod(result, start or result.days[0], end or result.days[-1])
+def window(result: Result, start: date | None, end: date | None, periods: int) -> Metrics:
+    return subperiod(result, start or result.days[0], end or result.days[-1], periods)
 
 
 def main():
@@ -66,6 +67,8 @@ def main():
     for symbol in profile.symbols:
         payload, digest, _ = fetch(symbol, cache, args.refresh)
         series[symbol] = parse_yahoo_chart(payload, symbol, profile.history_start)
+        if profile.data_end is not None:
+            series[symbol] = through(series[symbol], profile.data_end)
         digests[symbol] = digest
     removed: dict[str, tuple[date, ...]] = {}
     if args.drop_suspect:
@@ -81,22 +84,24 @@ def main():
             if days_out:
                 print(f"  {symbol:<10} " + ", ".join(d.isoformat() for d in days_out))
     market = build_market(series, ref)
-    strategies = {
-        "benchmark": BuyAndHold(market, ref),
-        **candidates(market, profile.defensive, symbol=ref, universe=profile.universe),
-    }
+    periods = profile.periods_per_year
+    if profile.candidate_set == "crypto":
+        listed = crypto_candidates(market, symbol=ref, universe=profile.universe)
+    else:
+        listed = candidates(market, profile.defensive, symbol=ref, universe=profile.universe)
+    strategies = {"benchmark": BuyAndHold(market, ref), **listed}
     runs = {
         bps: {
-            k: run_backtest(market, s, cost_bps=bps, first=TRADING_DAYS)
-            for k, s in strategies.items()
+            k: run_backtest(market, s, cost_bps=bps, first=periods) for k, s in strategies.items()
         }
         for bps in (low, high)
     }
     days = runs[low]["benchmark"].days
     dev_last = max(d for d in days if d <= profile.dev_end)
-    bench = {bps: window(r["benchmark"], None, profile.dev_end) for bps, r in runs.items()}
+    bench = {bps: window(r["benchmark"], None, profile.dev_end, periods) for bps, r in runs.items()}
 
-    print(f"MARKET {profile.label}: benchmark {ref}, defensive asset {profile.defensive}")
+    defensive = profile.defensive or "none (cash at 0%)"
+    print(f"MARKET {profile.label}: benchmark {ref}, defensive asset {defensive}")
     print("DATA (daily, adjusted for dividends and splits; Yahoo chart, unofficial)")
     for symbol, one in series.items():
         print(
@@ -108,15 +113,15 @@ def main():
         f"CRITERION (fixed before running): CAGR >= {ref} - {RETURN_TOLERANCE * 100:.0f} pp and"
         f" max drawdown >= {DRAWDOWN_SHARE:.0%} of {ref}'s. {len(strategies) - 1} candidates were run."
     )
-    print(f"DEVELOPMENT {days[0]} -> {dev_last} (defensive asset {profile.defensive}, {low:g} bps)")
+    print(f"DEVELOPMENT {days[0]} -> {dev_last} (defensive asset {defensive}, {low:g} bps)")
     print(
         f"  {'':<16} {'CAGR':>7} {'maxDD':>8} {'Sharpe':>7} {'orders/yr':>9}  return risk  cost-robust"
     )
     out: dict = {"market": profile.key, "development": {}, "drop_suspect": args.drop_suspect}
     passing: list[tuple[float, float, str]] = []
     for key, res in runs[low].items():
-        m_low = window(res, None, profile.dev_end)
-        m_high = window(runs[high][key], None, profile.dev_end)
+        m_low = window(res, None, profile.dev_end, periods)
+        m_high = window(runs[high][key], None, profile.dev_end, periods)
         verdict = judge(m_low, bench[low])
         robust = key != "benchmark" and judge(m_high, bench[high]).return_ok
         tag = (
@@ -161,8 +166,8 @@ def main():
         print(f"HOLD-OUT {hold_start} -> {days[-1]} (opened once, chosen candidate only)")
         out["holdout"] = {}
         for bps in (low, high):
-            hb = window(runs[bps]["benchmark"], hold_start, None)
-            hc = window(runs[bps][chosen], hold_start, None)
+            hb = window(runs[bps]["benchmark"], hold_start, None, periods)
+            hc = window(runs[bps][chosen], hold_start, None, periods)
             v = judge(hc, hb)
             print(
                 f"  {bps:>2g} bps  {ref} buy and hold: CAGR {pct(hb.cagr)} maxDD {pct(hb.max_drawdown)}"

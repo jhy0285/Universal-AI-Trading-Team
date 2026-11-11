@@ -12,10 +12,12 @@ from dataclasses import dataclass
 from datetime import date
 
 from trading_team.equity_backtest import (
+    CALENDAR_DAYS,
     DEFAULT_UNIVERSE,
     DEFENSIVE_ASSET,
     DEV_END,
     HOLDOUT_START,
+    TRADING_DAYS,
 )
 
 
@@ -25,18 +27,21 @@ class Profile:
     label: str
     reference: str  # the benchmark: bought and held, and the calendar of the whole market
     universe: tuple[str, ...]  # ranked by the momentum rules; excludes the defensive asset
-    defensive: str  # holds the unallocated share (what an investor holds instead of idle cash)
+    defensive: str | None  # holds the unallocated share; None: it sits in cash at 0%
     cost_bps: float  # one-way cost used for the criterion
     robust_cost_bps: float  # the return condition must also hold at this higher cost
     dev_end: date
     holdout_start: date
     history_start: date | None = None  # bars before this date are unusable and left out
     cache_dir: str = ".state/equity-cache"
+    periods_per_year: int = TRADING_DAYS  # bars a year: annualisation and the one-year warm-up
+    candidate_set: str = "etf"  # "etf": equity_backtest.candidates; "crypto": crypto_candidates
+    data_end: date | None = None  # bars after this date are left out (a 24/7 market's open day)
 
     @property
     def symbols(self) -> tuple[str, ...]:
         """Everything to download: the universe, the defensive asset and the reference."""
-        extra = tuple(s for s in (self.defensive, self.reference) if s not in self.universe)
+        extra = tuple(s for s in (self.defensive, self.reference) if s and s not in self.universe)
         return (*self.universe, *dict.fromkeys(extra))
 
 
@@ -95,4 +100,25 @@ KR = Profile(
     cache_dir=".state/kr-cache",
 )
 
-PROFILES = {profile.key: profile for profile in (US, KR)}
+# Crypto majors on Yahoo ("-USD"), daily bars on the UTC calendar, every day of the year. Bitcoin is
+# the benchmark; Ether and Solana are the two the user named. Each starts where Yahoo's history does
+# (see the data audit in docs/equity-backtest-crypto.md). No stablecoin yield is assumed: out of the
+# market means cash at 0%.
+CRYPTO = Profile(
+    key="crypto",
+    label="Crypto majors",
+    reference="BTC-USD",
+    universe=("BTC-USD", "ETH-USD", "SOL-USD"),
+    defensive=None,
+    cost_bps=10.0,
+    robust_cost_bps=30.0,
+    dev_end=date(2021, 12, 31),
+    holdout_start=date(2022, 1, 1),
+    cache_dir=".state/crypto-cache",
+    periods_per_year=CALENDAR_DAYS,
+    candidate_set="crypto",
+    # Fixed when the run was registered: the last completed UTC day. The day in progress is left out.
+    data_end=date(2026, 11, 10),
+)
+
+PROFILES = {profile.key: profile for profile in (US, KR, CRYPTO)}

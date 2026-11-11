@@ -114,7 +114,8 @@ class Settings(BaseSettings):
     market_data_feed_api_key: SecretStr = SecretStr("")
     # Free Jupiter/Solana RPC/GeckoTerminal observations for the most liquid Dex pools.
     market_observer_enabled: bool = True
-    market_observer_max_assets: int = Field(default=3, ge=1, le=10)
+    # Above 10 pools see `observer_fits_its_interval`: a collection takes about 4-5 s per pool.
+    market_observer_max_assets: int = Field(default=3, ge=1, le=20)
     # Optional free key from Jupiter's portal: 60 instead of 30 requests/minute.
     jupiter_api_key: SecretStr = SecretStr("")
     # Optional messages for fills, halts, the intraday 10% alert and daily reports.
@@ -207,6 +208,21 @@ class Settings(BaseSettings):
         if p.scheme != "https" and p.hostname not in {"localhost", "127.0.0.1", "::1", "ollama"}:
             raise ValueError("remote providers require HTTPS")
         return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def observer_fits_its_interval(self) -> Settings:
+        # Measured 2026-11-10 with the free Jupiter key: about 3.6 s per pool (p90 4.7 s). Without
+        # the key Jupiter is paced at 2.2 s a call, about 9 s per pool. A collection longer than the
+        # interval is skipped, so more pools only help when the interval leaves room for them.
+        pools = self.market_observer_max_assets
+        if pools > 10:
+            if not self.jupiter_api_key.get_secret_value():
+                raise ValueError("more than 10 observed pools needs the free JUPITER_API_KEY")
+            if self.autonomous_collect_seconds < 6 * pools:
+                raise ValueError(
+                    f"{pools} observed pools need AUTONOMOUS_COLLECT_SECONDS of at least {6 * pools}"
+                )
+        return self
 
     @model_validator(mode="after")
     def forbid_agent_overrides(self) -> Settings:
