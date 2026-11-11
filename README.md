@@ -153,6 +153,7 @@ Compose는 PostgreSQL을 사용하고 호스트 개발 명령은 `.env`의 DB UR
 | [학습 루프](docs/learning-loop.md) | 결정 결과 측정, 모델 신뢰도·보정, 사람이 검토하는 개선 제안 |
 | [미국 주식·ETF 백테스트](docs/equity-backtest.md) | 고정 규칙 전략을 과거 일봉으로 시험하고 SPY 보유와 비교(연구 전용, 주문 없음) |
 | [국내 ETF 백테스트](docs/equity-backtest-kr.md) | 같은 규칙·기준·절차를 국내 상장 ETF에 적용(사전 등록 → 개발 구간 → 검증 구간 한 번). 연구 전용, 주문 없음 |
+| [코인 백테스트](docs/equity-backtest-crypto.md) | 같은 기준·절차를 BTC·ETH·SOL에 적용(매일 거래하는 달력, 방어 자산 없이 현금). 사전 등록 후 1회 실행 |
 | [미국 ETF 실시간 모의 운용](docs/equity-paper.md) | 고른 전략을 하루 1회 결정·기록하고 모의 자산을 계산(PAPER ONLY, LLM 없음) |
 | [자동 페이퍼](docs/autonomous-paper.md) | 로컬 CPU 모델, 자동 작업·자료 공급·BOOK·정산·상태 확인 |
 | [무료 시장 관측](docs/market-observer.md) | Jupiter 깊이·Solana 보유자·GeckoTerminal 거래로 채우는 필드, 해석, 비용 |

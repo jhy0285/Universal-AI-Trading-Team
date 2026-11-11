@@ -59,6 +59,7 @@
    매일 run을 돌려야 하고, 기록이 컨테이너 디스크에만 있어 회수되면 사라진다 → 장기 운용은 사용자 PC·서버로 옮길 것. 이 컨테이너는 Postgres에 직접 연결할 수 없어(프록시 전용) 매일 실행을 GitHub Actions(.github/workflows/equity-paper.yml)로 옮겼다. 사용자가 저장소 비밀 값 EQUITY_PAPER_DB_URL(Neon 직접 연결 문자열)을 넣었고, 2026-11-11 05:18 UTC에 Actions에서 seed_file=records/equity-paper-seed.json 으로 첫 실행이 성공했다(Neon 연결, Yahoo 조회, 기록 이전 확인. docs/equity-paper.md). 예약 실행은 2026-11-11 22:41 UTC의 첫 실행을 확인해야 한다. 이 컨테이너의 예약 작업(trig_01GSdAc8okfyfuHbiFhMyoDd)은 매일 08:20 KST에 Actions 결과만 확인한다. 값은 출력하지 않는다. 판정은 1년·SPY 낙폭 15% 이상일 때만.
    LLM 판단은 과거 백테스트로 평가하지 않는다(미래 정보 누수). 실시간 기록이 쌓인 뒤 앞으로의 데이터로만 시험한다.
    국내 ETF 백테스트(docs/equity-backtest-kr.md): 사전 등록 → 1회 실행, 통과 후보 0개, 검증 구간은 열지 않았다(깨끗함). 후보 추가·매개변수 변경은 시험 횟수 증가이므로 사용자 승인과 기록이 필요하다. 다음 시장은 BTC·ETH·SOL(24시간 거래라 엔진의 달력 규칙을 먼저 손봐야 함).
+   코인 백테스트(docs/equity-backtest-crypto.md): BTC·ETH·SOL, 후보 8개를 사전 등록(2026-11-11)한 뒤 1회 실행한다. 결과는 문서에 있다. 누적 후보가 30개(미국 11, 국내 11, 코인 8)라 시험 횟수에 주의.
 1. 최신 main에서 시작한다(PR #1·#2는 병합됨). main이 앞서 나가면 rebase·force push 대신 main을 merge한다. 병합은 사용자가 승인했을 때만 한다.
 2. 실데이터 모의 체결 1건 확인(인수인계 완료 기준).
    - Sonnet 전역 모델로 worker를 장시간(가능하면 24시간) 돌린다. PAPER_INITIAL_CASH=10000을 쓸지는 사용자와 정한다.

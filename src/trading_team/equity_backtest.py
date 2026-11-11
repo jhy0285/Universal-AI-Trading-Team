@@ -17,6 +17,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Protocol
 
 TRADING_DAYS = 252
+CALENDAR_DAYS = 365  # crypto trades every day: a year is 365 daily bars, a month about 30
 # Broad index and sector ETFs, fixed in advance. Not chosen by their performance.
 DEFAULT_UNIVERSE = (
     "SPY", "QQQ", "IWM", "EFA", "EEM", "TLT", "GLD",
@@ -114,6 +115,11 @@ def suspect_days(
         if max(abs(m) for m in moves(reference.bars, index[day])) < calm:
             flagged.append(day)
     return tuple(flagged)
+
+
+def through(series: Series, last: date) -> Series:
+    """The series up to and including `last`: a pre-registered end, or the last completed day."""
+    return Series(series.symbol, tuple(b for b in series.bars if b.day <= last), series.dropped)
 
 
 def without_days(series: Series, days: Sequence[date]) -> Series:
@@ -300,6 +306,7 @@ class DualMomentum:
         lookback: int = TRADING_DAYS,
         skip: int = 21,
         defensive: str | None = None,
+        month_bars: int = 21,  # bars per month, only for the name (30 for a market open every day)
     ):
         if top_n < 1 or not 0 <= skip < lookback:
             raise ValueError("need top_n >= 1 and 0 <= skip < lookback")
@@ -307,10 +314,10 @@ class DualMomentum:
             BuyAndHold._check(market, symbol)
         self.market, self.universe, self.defensive = market, tuple(universe), defensive
         self.top_n, self.lookback, self.skip = top_n, lookback, skip
-        months = round(lookback / 21)
+        months = round(lookback / month_bars)
         self.name = (
-            f"momentum top{top_n} of {len(self.universe)} ({months}-{round(skip / 21)}m, monthly)"
-            + (f", empty slots {defensive}" if defensive else "")
+            f"momentum top{top_n} of {len(self.universe)} ({months}-{round(skip / month_bars)}m,"
+            " monthly)" + (f", empty slots {defensive}" if defensive else "")
         )
 
     def weights(self, i: int) -> dict[str, float] | None:
@@ -342,6 +349,7 @@ class VolTarget:
         target_vol: float = 0.10,
         window: int = 20,
         defensive: str | None = None,
+        periods_per_year: int = TRADING_DAYS,
     ):
         BuyAndHold._check(market, symbol)
         if defensive is not None:
@@ -349,7 +357,7 @@ class VolTarget:
         if target_vol <= 0 or window < 2:
             raise ValueError("need target_vol > 0 and window >= 2")
         self.market, self.symbol, self.defensive = market, symbol, defensive
-        self.target_vol, self.window = target_vol, window
+        self.target_vol, self.window, self.periods = target_vol, window, periods_per_year
         self.name = f"vol target {target_vol:.0%} on {symbol} ({window}d, weekly)" + (
             f", rest {defensive}" if defensive else ""
         )
@@ -363,7 +371,7 @@ class VolTarget:
             return None  # not enough real prices to measure volatility: no decision
         prices = [v for v in window if v is not None]
         moves = [b / a - 1.0 for a, b in zip(prices, prices[1:], strict=False)]
-        sigma = statistics.stdev(moves) * math.sqrt(TRADING_DAYS)
+        sigma = statistics.stdev(moves) * math.sqrt(self.periods)
         share = 1.0 if sigma <= 0 else min(1.0, self.target_vol / sigma)
         return _fill_defensive({self.symbol: share}, self.defensive, self.market, i)
 
@@ -549,8 +557,17 @@ class Metrics:
     longest_underwater_days: int
 
 
-def compute_metrics(days: Sequence[date], equity: Sequence[float], base: float = 1.0) -> Metrics:
-    """Metrics of an equity path that starts from `base` just before days[0]."""
+def compute_metrics(
+    days: Sequence[date],
+    equity: Sequence[float],
+    base: float = 1.0,
+    periods_per_year: int = TRADING_DAYS,
+) -> Metrics:
+    """Metrics of an equity path that starts from `base` just before days[0].
+
+    `periods_per_year` annualises volatility and Sharpe: 252 trading days for exchanges, 365 for a
+    market that trades every day. CAGR uses calendar time either way.
+    """
     if len(days) != len(equity) or len(days) < 2:
         raise ValueError("need matching days and equity with at least two points")
     steps = zip(equity, equity[1:], strict=False)  # consecutive pairs: the second list is shorter
@@ -558,8 +575,8 @@ def compute_metrics(days: Sequence[date], equity: Sequence[float], base: float =
     years = (days[-1] - days[0]).days / 365.25
     total = equity[-1] / base - 1.0
     cagr = (equity[-1] / base) ** (1.0 / years) - 1.0 if years > 0 and equity[-1] > 0 else None
-    sigma = statistics.pstdev(returns) * math.sqrt(TRADING_DAYS)
-    sharpe = statistics.fmean(returns) * TRADING_DAYS / sigma if sigma > 0 else None
+    sigma = statistics.pstdev(returns) * math.sqrt(periods_per_year)
+    sharpe = statistics.fmean(returns) * periods_per_year / sigma if sigma > 0 else None
     peak, worst, since, longest = base, 0.0, 0, 0
     for k, value in enumerate(equity):
         if value >= peak:
@@ -570,14 +587,16 @@ def compute_metrics(days: Sequence[date], equity: Sequence[float], base: float =
     return Metrics(years, total, cagr, sigma, sharpe, worst, longest)
 
 
-def subperiod(result: Result, start: date, end: date) -> Metrics:
+def subperiod(
+    result: Result, start: date, end: date, periods_per_year: int = TRADING_DAYS
+) -> Metrics:
     """Metrics for the days in [start, end], rebased to the close before the first of them."""
     idx = [k for k, d in enumerate(result.days) if start <= d <= end]
     if len(idx) < 2:
         raise ValueError("the sub-period needs at least two trading days")
     a, b = idx[0], idx[-1]
     base = result.equity[a - 1] if a > 0 else 1.0
-    return compute_metrics(result.days[a : b + 1], result.equity[a : b + 1], base)
+    return compute_metrics(result.days[a : b + 1], result.equity[a : b + 1], base, periods_per_year)
 
 
 DEFENSIVE_ASSET = "SHY"  # 1-3 year Treasuries: what a real investor holds instead of idle cash
@@ -615,6 +634,29 @@ def candidates(
         "mom6_top5_def": DualMomentum(market, universe, top_n=5, lookback=126, defensive=defensive),
         "vol10_def": VolTarget(market, symbol, 0.10, 20, defensive),
         "vol12_def": VolTarget(market, symbol, 0.12, 20, defensive),
+    }
+
+
+def crypto_candidates(
+    market: Market, *, symbol: str, universe: Sequence[str]
+) -> dict[str, Strategy]:
+    """The pre-registered crypto list (docs/equity-backtest-crypto.md), fixed before any run.
+
+    The same families as the ETF list on a market that trades every day: windows count calendar
+    days (a year is 365 bars, a month 30), volatility is annualised over 365 days, and there is no
+    defensive asset, so an unallocated share sits in cash at 0%. Eight strategies.
+    """
+    year, month = CALENDAR_DAYS, 30
+    momentum = {"skip": month, "month_bars": month}
+    return {
+        "trend200": TrendFilter(market, symbol, 200),
+        "trend100": TrendFilter(market, symbol, 100),
+        "mom12_top1": DualMomentum(market, universe, top_n=1, lookback=year, **momentum),
+        "mom12_top2": DualMomentum(market, universe, top_n=2, lookback=year, **momentum),
+        "mom6_top1": DualMomentum(market, universe, top_n=1, lookback=year // 2, **momentum),
+        "mom6_top2": DualMomentum(market, universe, top_n=2, lookback=year // 2, **momentum),
+        "vol40": VolTarget(market, symbol, 0.40, 30, periods_per_year=year),
+        "vol60": VolTarget(market, symbol, 0.60, 30, periods_per_year=year),
     }
 
 
