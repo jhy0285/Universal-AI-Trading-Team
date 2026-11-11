@@ -360,8 +360,21 @@ class ReplayRun(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
+def normalize_database_url(url: str) -> str:
+    """Hosted PostgreSQL services hand out `postgres://` or `postgresql://` strings.
+
+    SQLAlchemy would pick the psycopg2 driver for the second form and reject the first, but this
+    project ships psycopg 3, so name that driver. Every other URL is returned unchanged.
+    """
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url.removeprefix(prefix)
+    return url
+
+
 class Database:
     def __init__(self, url: str):
+        url = normalize_database_url(url)
         if url.startswith("sqlite:///") and not url.endswith(":memory:"):
             Path(url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
         options: dict[str, Any] = {"pool_pre_ping": True}

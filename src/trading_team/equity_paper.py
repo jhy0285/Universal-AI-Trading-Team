@@ -319,6 +319,59 @@ def run_once(
     return report
 
 
+def copy_records(source: Database, target: Database) -> dict:
+    """Move the forward-run records to another database (for example a hosted PostgreSQL).
+
+    Records are evidence, so this never overwrites and never merges two histories. The target must
+    hold nothing, or only rows that are identical to the source's (a copy that is repeated, or
+    topped up with the days recorded since). A row that differs, or a row the source does not have,
+    stops everything before anything is written. The recorded time, the data digest and the
+    `timely` flag are copied as they are, so the proof that a decision came first survives the move.
+    """
+    tables = (
+        (EquityPaperRun, lambda r: r.strategy),
+        (EquityPaperDecision, lambda r: (r.strategy, r.data_through)),
+        (EquityPaperNav, lambda r: (r.strategy, r.day)),
+    )
+
+    def values(row) -> dict:
+        # `id` is only a counter of the database that assigned it, not part of the record.
+        return {c.name: getattr(row, c.name) for c in row.__table__.columns if c.name != "id"}
+
+    def read(db: Database, model) -> list:
+        with db.transaction() as session:
+            return list(session.scalars(select(model)).all())
+
+    plan = []
+    for model, key in tables:
+        mine = {key(r): r for r in read(source, model)}
+        theirs = {key(r): r for r in read(target, model)}
+        name = model.__tablename__
+        extra = sorted(str(k) for k in theirs if k not in mine)
+        if extra:
+            raise EquityPaperError(
+                f"{name}: the target already has records the source lacks {extra[:3]}; two"
+                " histories are never merged"
+            )
+        differing = sorted(str(k) for k, r in theirs.items() if values(r) != values(mine[k]))
+        if differing:
+            raise EquityPaperError(
+                f"{name}: the target holds different values for {differing[:3]}; nothing is"
+                " overwritten"
+            )
+        plan.append((model, [r for k, r in mine.items() if k not in theirs], len(theirs)))
+    copied: dict[str, int] = {}
+    already: dict[str, int] = {}
+    with target.transaction() as session:  # all or nothing
+        for model, missing, present in plan:
+            # Source order (id order for decisions) so the target numbers them the same way.
+            for row in sorted(missing, key=lambda r: getattr(r, "id", 0)):
+                session.add(model(**values(row)))
+            copied[model.__tablename__] = len(missing)
+            already[model.__tablename__] = present
+    return {"paper_only": True, "copied": copied, "already_present": already}
+
+
 def _evaluation(days: list[date], mine: list[float], theirs: list[float]) -> dict:
     if len(days) < FORWARD_MIN_DAYS:
         return {"state": "insufficient_sample", "days": len(days), "needed_days": FORWARD_MIN_DAYS}

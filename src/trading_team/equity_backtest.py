@@ -52,8 +52,12 @@ def _positive(value: object) -> bool:
     )
 
 
-def parse_yahoo_chart(payload: object, symbol: str) -> Series:
-    """Daily bars from a Yahoo chart response (an unofficial endpoint, no stability promise)."""
+def parse_yahoo_chart(payload: object, symbol: str, start: date | None = None) -> Series:
+    """Daily bars from a Yahoo chart response (an unofficial endpoint, no stability promise).
+
+    `start` leaves out every row before that date, for a provider whose early history is
+    unusable (placeholder rows, then a gap of years). The cut is stated by the caller, never
+    inferred from a price, and the rows left out are not counted as dropped bars."""
     try:
         chart = payload["chart"]  # type: ignore[index]
         if chart.get("error"):
@@ -77,6 +81,8 @@ def parse_yahoo_chart(payload: object, symbol: str) -> Series:
         if previous is not None and day <= previous:
             raise BacktestDataError(f"{symbol}: timestamps are not strictly increasing")
         previous = day
+        if start is not None and day < start:
+            continue
         if not all(_positive(v) for v in (raw_open, raw_close, adj_close)):
             dropped += 1
             continue
@@ -84,6 +90,38 @@ def parse_yahoo_chart(payload: object, symbol: str) -> Series:
     if not bars:
         raise BacktestDataError(f"{symbol}: no usable bars")
     return Series(symbol.upper(), tuple(bars), dropped)
+
+
+def suspect_days(
+    series: Series, reference: Series, *, move: float = 0.10, calm: float = 0.05
+) -> tuple[date, ...]:
+    """Days on which a symbol jumps by more than `move` (close to close, overnight gap or open
+    to close) while the reference stayed within `calm` on every one of those measures. A lone
+    spike like that is more likely a bad print than a real move. The reference is never
+    checked, and a day on which the reference cannot be measured is not flagged. For a
+    sensitivity run only: the official run uses the bars as the provider gives them."""
+
+    def moves(bars: tuple[Bar, ...], k: int) -> tuple[float, float, float]:
+        a, b = bars[k - 1], bars[k]
+        return b.close / a.close - 1.0, b.open / a.close - 1.0, b.close / b.open - 1.0
+
+    index = {bar.day: k for k, bar in enumerate(reference.bars) if k > 0}
+    flagged: list[date] = []
+    for k in range(1, len(series.bars)):
+        day = series.bars[k].day
+        if day not in index or max(abs(m) for m in moves(series.bars, k)) <= move:
+            continue
+        if max(abs(m) for m in moves(reference.bars, index[day])) < calm:
+            flagged.append(day)
+    return tuple(flagged)
+
+
+def without_days(series: Series, days: Sequence[date]) -> Series:
+    """The series without the bars on `days`, which then count as missing in the market."""
+    leave = set(days)
+    return Series(
+        series.symbol, tuple(b for b in series.bars if b.day not in leave), series.dropped
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -549,26 +587,34 @@ DEV_END = date(2019, 12, 31)
 HOLDOUT_START = date(2020, 1, 1)
 
 
-def candidates(market: Market, defensive: str = DEFENSIVE_ASSET) -> dict[str, Strategy]:
+def candidates(
+    market: Market,
+    defensive: str = DEFENSIVE_ASSET,
+    *,
+    symbol: str = "SPY",
+    universe: Sequence[str] = DEFAULT_UNIVERSE,
+) -> dict[str, Strategy]:
     """The fixed, pre-registered candidate list: 11 strategies, parameters from the literature.
 
     The first three are the strategies of the first backtest (cash when out of the market); the
     other eight are the same ideas with the defensive asset instead of cash, plus volatility
     targeting. Nothing here is tuned; adding or changing candidates after seeing results would
-    raise the number of trials and must be reported as such.
+    raise the number of trials and must be reported as such. `symbol` is the benchmark the
+    single-asset rules trade and `universe` the set the momentum rules rank; another market uses
+    the same rules with its own symbols (see equity_markets.py).
     """
     return {
-        "trend": TrendFilter(market, "SPY", 200),
-        "momentum": DualMomentum(market, top_n=3),
-        "rsi2": RSI2Reversion(market, "SPY"),
-        "trend200_def": TrendFilter(market, "SPY", 200, defensive),
-        "trend100_def": TrendFilter(market, "SPY", 100, defensive),
-        "mom12_top3_def": DualMomentum(market, top_n=3, defensive=defensive),
-        "mom12_top5_def": DualMomentum(market, top_n=5, defensive=defensive),
-        "mom6_top3_def": DualMomentum(market, top_n=3, lookback=126, defensive=defensive),
-        "mom6_top5_def": DualMomentum(market, top_n=5, lookback=126, defensive=defensive),
-        "vol10_def": VolTarget(market, "SPY", 0.10, 20, defensive),
-        "vol12_def": VolTarget(market, "SPY", 0.12, 20, defensive),
+        "trend": TrendFilter(market, symbol, 200),
+        "momentum": DualMomentum(market, universe, top_n=3),
+        "rsi2": RSI2Reversion(market, symbol),
+        "trend200_def": TrendFilter(market, symbol, 200, defensive),
+        "trend100_def": TrendFilter(market, symbol, 100, defensive),
+        "mom12_top3_def": DualMomentum(market, universe, top_n=3, defensive=defensive),
+        "mom12_top5_def": DualMomentum(market, universe, top_n=5, defensive=defensive),
+        "mom6_top3_def": DualMomentum(market, universe, top_n=3, lookback=126, defensive=defensive),
+        "mom6_top5_def": DualMomentum(market, universe, top_n=5, lookback=126, defensive=defensive),
+        "vol10_def": VolTarget(market, symbol, 0.10, 20, defensive),
+        "vol12_def": VolTarget(market, symbol, 0.12, 20, defensive),
     }
 
 

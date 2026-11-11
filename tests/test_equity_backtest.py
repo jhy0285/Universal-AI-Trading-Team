@@ -10,11 +10,13 @@ from trading_team.equity_backtest import (
     DEFAULT_UNIVERSE,
     DEFENSIVE_ASSET,
     BacktestDataError,
+    Bar,
     BuyAndHold,
     DualMomentum,
     Market,
     Metrics,
     RSI2Reversion,
+    Series,
     TrendFilter,
     VolTarget,
     candidates,
@@ -27,8 +29,11 @@ from trading_team.equity_backtest import (
     run_backtest,
     sma_series,
     subperiod,
+    suspect_days,
     week_end,
+    without_days,
 )
+from trading_team.equity_markets import KR, PROFILES, US
 
 STAMP = 1704205800  # 2024-01-02 14:30 UTC, the open of a US trading day
 
@@ -374,3 +379,88 @@ def test_every_pre_registered_candidate_builds_and_runs_without_breaking_the_rul
     for key, strategy in found.items():
         result = run_backtest(market, strategy, cost_bps=5, first=260)  # weights are validated
         assert result.equity[-1] > 0, key
+
+
+def test_the_us_profile_is_the_original_setup_unchanged():
+    assert US.reference == "SPY" and US.universe == DEFAULT_UNIVERSE
+    assert US.defensive == DEFENSIVE_ASSET and (US.cost_bps, US.robust_cost_bps) == (5.0, 10.0)
+    assert US.history_start is None and US.symbols == (*DEFAULT_UNIVERSE, DEFENSIVE_ASSET)
+    symbols = (*DEFAULT_UNIVERSE, DEFENSIVE_ASSET)
+    market = market_of({s: random_walk(300, k) for k, s in enumerate(symbols)})
+    explicit = candidates(market, symbol="SPY", universe=DEFAULT_UNIVERSE)
+    assert {k: v.name for k, v in explicit.items()} == {
+        k: v.name for k, v in candidates(market).items()
+    }
+
+
+def test_profiles_are_consistent_and_never_mix_markets():
+    for profile in PROFILES.values():
+        assert profile.reference in profile.universe  # the benchmark is also a ranked asset
+        assert profile.defensive not in profile.universe  # the defensive asset only fills slots
+        assert len(set(profile.universe)) == len(profile.universe)
+        assert len(set(profile.symbols)) == len(profile.symbols)
+        assert 0 < profile.cost_bps < profile.robust_cost_bps
+        assert profile.dev_end < profile.holdout_start
+    assert KR.reference == "069500.KS" and KR.defensive == "114100.KS"
+    assert all(s.endswith(".KS") for s in KR.symbols) and not set(KR.symbols) & set(US.symbols)
+    assert KR.history_start is not None and len(KR.universe) == 20
+    assert (KR.cost_bps, KR.robust_cost_bps) == (10.0, 20.0)
+
+
+def test_the_same_rules_run_on_another_market_and_trade_only_its_own_symbols():
+    symbols = (*KR.universe, KR.defensive)
+    market = market_of({s: random_walk(420, k) for k, s in enumerate(symbols)})
+    found = candidates(market, KR.defensive, symbol=KR.reference, universe=KR.universe)
+    assert len(found) == 11 and len({s.name for s in found.values()}) == 11
+    for key, strategy in found.items():
+        assert "SPY" not in strategy.name, key
+        result = run_backtest(market, strategy, cost_bps=KR.cost_bps, first=260)
+        assert result.equity[-1] > 0, key
+        assert set(result.holdings) <= set(symbols), key
+    with pytest.raises(BacktestDataError):  # a US symbol does not exist in this market
+        candidates(market, KR.defensive, symbol="SPY", universe=KR.universe)
+
+
+def test_a_stated_start_leaves_out_early_rows_without_counting_them_as_dropped():
+    body = payload(
+        "069500.KS",
+        opens=(100.0, None, 101.0, None, 103.0),
+        closes=(101.0, 102.0, 103.0, 104.0, 105.0),
+        adj=(1.0, 1.0, 1.0, 1.0, 1.0),
+    )
+    everything = parse_yahoo_chart(body, "069500.KS")
+    assert len(everything.bars) == 3 and everything.dropped == 2
+    start = everything.bars[1].day
+    cut = parse_yahoo_chart(body, "069500.KS", start)
+    assert [b.day for b in cut.bars] == [b.day for b in everything.bars[1:]]
+    assert cut.dropped == 1  # only the bad row on or after the start counts
+    with pytest.raises(BacktestDataError):
+        parse_yahoo_chart(body, "069500.KS", everything.bars[-1].day + timedelta(days=3))
+
+
+def series_of(symbol: str, closes, opens=None) -> Series:
+    days = weekdays(len(closes))
+    opens = opens or closes
+    return Series(
+        symbol, tuple(Bar(d, o, c) for d, o, c in zip(days, opens, closes, strict=True)), 0
+    )
+
+
+def test_only_a_lone_spike_is_suspect_and_the_reference_is_never_judged():
+    calm = [100.0 + k * 0.1 for k in range(30)]
+    reference = series_of("REF", calm)
+    spike = list(calm)
+    spike[10] = calm[10] * 1.15  # +15% close, back to normal the next day
+    lone = series_of("A", spike)
+    assert suspect_days(lone, reference) == (lone.bars[10].day, lone.bars[11].day)
+    only_open = series_of("B", calm, opens=[c * 1.2 if k == 12 else c for k, c in enumerate(calm)])
+    assert suspect_days(only_open, reference) == (only_open.bars[12].day,)  # a bad open print
+    # A market-wide move is real: the reference moved too, so nothing is flagged.
+    crash = [c * 0.85 if k >= 10 else c for k, c in enumerate(calm)]
+    assert suspect_days(series_of("C", crash), series_of("REF", crash)) == ()
+    # The reference itself is not checked, and a day it does not trade cannot be compared.
+    assert suspect_days(reference, series_of("X", spike)) == ()
+    short = Series("S", tuple(b for b in lone.bars if b.day != lone.bars[10].day), 0)
+    assert suspect_days(lone, short) == (lone.bars[11].day,)  # day 10 is unknown: not flagged
+    left = without_days(lone, suspect_days(lone, reference))
+    assert len(left.bars) == len(lone.bars) - 2 and left.dropped == lone.dropped

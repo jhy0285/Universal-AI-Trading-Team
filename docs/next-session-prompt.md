@@ -34,7 +34,8 @@
   그때의 병목은 공용 Solana RPC 429(수집 112회 중 97회). Helius 무료 Solana RPC(SOLANA_RPC_URL=https://mainnet.helius-rpc.com)로 같은 10풀·60초 120분을 돌리자
   수집 오류 0, ONCHAIN_UNAVAILABLE 0, 수집 중앙값 30.7초(건너뜀 0), 모델에 닿은 풀 7개(VET 19회)였고 Sonnet이 19건을 모두 REJECT(승률 0.30~0.44, 기대수익 −5%~−1%), 체결 0.
   체결 0은 이제 자료가 아니라 시장·전략 결과로 보인다. Alchemy 무료는 getProgramAccounts가 429로 막혀 쓸 수 없었다(자세한 표는 docs/validation-report.md).
-  남은 병목: GeckoTerminal 거래 구간(클라우드 공유 IP). 다음 시험은 공유되지 않은 IP에서 24시간 이상. 결과는 scripts/run_summary.py 로 본다.
+  24시간 실행(2026-11-10~11)을 마쳤다: 수집 1,388회, 판단 3,054건 전부 차단(1위 STALE_OR_UNKNOWN_MARKET_TIME 68% = 관측 범위), VET 90건 전부 REJECT, 체결 0(docs/validation-report.md).
+  다음 결정: 관측 범위(MARKET_OBSERVER_MAX_ASSETS)를 넓힐지. 넓히면 Helius 크레딧도 는다(지금 속도로 월 무료 100만 초과). 결과는 scripts/run_summary.py 로 본다.
   Jupiter·Helius 키는 이 세션 환경에 request_credential로 저장돼 있다(값은 모른다). 앱에는 JUPITER_API_KEY=proxy-injected 자리표시와 키 없는 SOLANA_RPC_URL만 넘기면 프록시가 진짜 키를 헤더로 붙인다.
   한계: 앱은 RPC에 키 헤더를 보내지 않고 URL의 키도 거부한다. 프록시가 없는 환경에서 Helius를 쓰려면 앱에 RPC 키 헤더 설정(미구현)이 필요하다.
   주된 차단 사유: 최대 보유자 5% 초과, 보유자보다 가격이 빨리 오름, 어린 pair 유동성 감소, 상위 보유자 매도,
@@ -57,6 +58,7 @@
    2026-11-10에 일봉 실시간 모의 운용을 연결했다(docs/equity-paper.md, `trading-team equity-paper run|status`, 새 테이블 3개, 결정은 불변·시각·데이터 해시 기록).
    매일 run을 돌려야 하고, 기록이 컨테이너 디스크에만 있어 회수되면 사라진다 → 장기 운용은 사용자 PC·서버로 옮길 것. 판정은 1년·SPY 낙폭 15% 이상일 때만.
    LLM 판단은 과거 백테스트로 평가하지 않는다(미래 정보 누수). 실시간 기록이 쌓인 뒤 앞으로의 데이터로만 시험한다.
+   국내 ETF 백테스트(docs/equity-backtest-kr.md): 사전 등록 → 1회 실행, 통과 후보 0개, 검증 구간은 열지 않았다(깨끗함). 후보 추가·매개변수 변경은 시험 횟수 증가이므로 사용자 승인과 기록이 필요하다. 다음 시장은 BTC·ETH·SOL(24시간 거래라 엔진의 달력 규칙을 먼저 손봐야 함).
 1. 최신 main에서 시작한다(PR #1·#2는 병합됨). main이 앞서 나가면 rebase·force push 대신 main을 merge한다. 병합은 사용자가 승인했을 때만 한다.
 2. 실데이터 모의 체결 1건 확인(인수인계 완료 기준).
    - Sonnet 전역 모델로 worker를 장시간(가능하면 24시간) 돌린다. PAPER_INITIAL_CASH=10000을 쓸지는 사용자와 정한다.
@@ -65,7 +67,7 @@
    - 결정 사유 분포(GET /decisions, 대시보드 Meme Coin Scanner), 모델 호출 수, 체결·RISK 청산·장부 무결성을 기록한다.
    - 체결이 없으면 어느 게이트가 막았는지 숫자로 보고한다. 게이트를 바꾸고 싶다면 재생으로 먼저 시험하고 정책 버전을 올리며,
      반드시 사용자 승인을 받는다.
-3. 24시간 연속 운영 점검: 저장량(1분 수집당 약 59KB, 14일 보존), lease, 타임아웃, 모델 지연·사용량, 학습 제안 누적.
+3. (완료 2026-11-11) 24시간 연속 운영 점검. 정상. 저장량은 수집당 약 163KB(하루 226MB)로 앞선 59KB 추정보다 커서 보존·정리를 점검해야 한다.
 4. 학습 루프 제안을 실제 데이터로 읽는다. 표본(24h 가격 30건·자산 5개, 확정 20건)이 쌓이기 전에는 결론 금지.
 5. BOOK(예측시장): World Monitor 교차 신호가 0개인 원인(upstream seed)을 조사한다.
 
