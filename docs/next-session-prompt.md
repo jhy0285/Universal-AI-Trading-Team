@@ -35,7 +35,7 @@
   수집 오류 0, ONCHAIN_UNAVAILABLE 0, 수집 중앙값 30.7초(건너뜀 0), 모델에 닿은 풀 7개(VET 19회)였고 Sonnet이 19건을 모두 REJECT(승률 0.30~0.44, 기대수익 −5%~−1%), 체결 0.
   체결 0은 이제 자료가 아니라 시장·전략 결과로 보인다. Alchemy 무료는 getProgramAccounts가 429로 막혀 쓸 수 없었다(자세한 표는 docs/validation-report.md).
   24시간 실행(2026-11-10~11)을 마쳤다: 수집 1,388회, 판단 3,054건 전부 차단(1위 STALE_OR_UNKNOWN_MARKET_TIME 68% = 관측 범위), VET 90건 전부 REJECT, 체결 0(docs/validation-report.md).
-  다음 결정: 관측 범위(MARKET_OBSERVER_MAX_ASSETS)를 넓힐지. 넓히면 Helius 크레딧도 는다(지금 속도로 월 무료 100만 초과). 결과는 scripts/run_summary.py 로 본다.
+  다음 결정: 관측 범위(MARKET_OBSERVER_MAX_ASSETS)를 넓힐지. 넓히면 Helius 크레딧도 는다(지금 속도로 월 무료 100만 초과). 다만 gate_regret상 차단 후보의 1시간 뒤 평균이 −2.5%~−4.2%(문턱 4.9%)라 보류를 권고한다(사용자와 확정 필요). 결과는 scripts/run_summary.py 로 본다.
   Jupiter·Helius 키는 이 세션 환경에 request_credential로 저장돼 있다(값은 모른다). 앱에는 JUPITER_API_KEY=proxy-injected 자리표시와 키 없는 SOLANA_RPC_URL만 넘기면 프록시가 진짜 키를 헤더로 붙인다.
   한계: 앱은 RPC에 키 헤더를 보내지 않고 URL의 키도 거부한다. 프록시가 없는 환경에서 Helius를 쓰려면 앱에 RPC 키 헤더 설정(미구현)이 필요하다.
   주된 차단 사유: 최대 보유자 5% 초과, 보유자보다 가격이 빨리 오름, 어린 pair 유동성 감소, 상위 보유자 매도,
@@ -56,7 +56,7 @@
 0. 미국 주식·ETF(2026-11-10 사용자 결정: 밈코인 다음으로 시장을 넓히되 이쪽을 먼저, 개선은 반자동). docs/equity-backtest.md와 handoff의 0번 항목을 먼저 읽는다.
    성공 기준은 "SPY 보유와 비슷한 수익 + 낙폭 40% 이상 축소"로 고정돼 있고, 선택된 mom12_top5_def는 검증 구간(2020~)에서 근소하게 미달했다(검증 구간은 이미 열렸으니 재사용 금지).
    2026-11-10에 일봉 실시간 모의 운용을 연결했다(docs/equity-paper.md, `trading-team equity-paper run|status`, 새 테이블 3개, 결정은 불변·시각·데이터 해시 기록).
-   매일 run을 돌려야 하고, 기록이 컨테이너 디스크에만 있어 회수되면 사라진다 → 장기 운용은 사용자 PC·서버로 옮길 것. 판정은 1년·SPY 낙폭 15% 이상일 때만.
+   매일 run을 돌려야 하고, 기록이 컨테이너 디스크에만 있어 회수되면 사라진다 → 장기 운용은 사용자 PC·서버로 옮길 것. 사용자가 Neon 무료 PostgreSQL의 직접 연결 문자열을 환경 변수 `EQUITY_PAPER_DB_URL`로 저장하면(docs/equity-paper.md '무료 PostgreSQL에 쌓기'), `equity-paper copy`로 옮기고 두 DB의 status가 같은지 본 뒤 매일 실행 예약 작업의 DATABASE_URL을 그쪽으로 바꾼다(값은 출력하지 않는다). 판정은 1년·SPY 낙폭 15% 이상일 때만.
    LLM 판단은 과거 백테스트로 평가하지 않는다(미래 정보 누수). 실시간 기록이 쌓인 뒤 앞으로의 데이터로만 시험한다.
    국내 ETF 백테스트(docs/equity-backtest-kr.md): 사전 등록 → 1회 실행, 통과 후보 0개, 검증 구간은 열지 않았다(깨끗함). 후보 추가·매개변수 변경은 시험 횟수 증가이므로 사용자 승인과 기록이 필요하다. 다음 시장은 BTC·ETH·SOL(24시간 거래라 엔진의 달력 규칙을 먼저 손봐야 함).
 1. 최신 main에서 시작한다(PR #1·#2는 병합됨). main이 앞서 나가면 rebase·force push 대신 main을 merge한다. 병합은 사용자가 승인했을 때만 한다.
