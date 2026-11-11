@@ -58,7 +58,7 @@
    **24시간 실행을 마쳤습니다(2026-11-10~11, [검증 보고서](validation-report.md)):** 수집 1,388회, 판단 3,054건 전부 차단(1위 `STALE_OR_UNKNOWN_MARKET_TIME` 68%, 즉 관측 범위), VET 90건 전부 REJECT, 체결 0. 다음은 관측 범위(`MARKET_OBSERVER_MAX_ASSETS`)를 넓힐지 사용자와 정하기입니다. 넓히면 Helius 크레딧도 늘어납니다(지금 속도면 월 무료 100만을 넘음). 다만 차단 후보의 1시간 뒤 평균 수익이 −2.5%~−4.2%(문턱 4.9%)라 넓힐 근거가 약해 **보류를 권고**합니다(사용자와 확정 필요). 게이트 변경은 재생 시험 + 정책 버전 상승 + 사용자 승인.
    학습 루프의 1시간 뒤 가격: 신규 상장 풀은 평균적으로 크게 하락(표본 작음, 결론 아님). 체결이 드문 것이 결함이 아닐 수 있습니다.
    실행 결과는 `.venv/bin/python scripts/run_summary.py`(읽기 전용)로 한 번에 봅니다.
-2. **(완료 2026-11-11) worker 24시간 연속 실행 점검.** 정상이었고 장부 무결성도 통과했습니다. 새로 드러난 일: DB가 하루 226MB로 앞선 추정보다 크므로 14일 보존이면 수 GB가 됩니다(보존·정리 점검 필요), 학습 제안은 `DATA_COVERAGE` 1건뿐입니다. 숫자는 [검증 보고서](validation-report.md).
+2. **(완료 2026-11-11) worker 24시간 연속 실행 점검.** 정상이었고 장부 무결성도 통과했습니다. 새로 드러난 일: DB가 하루 226MB로 앞선 추정보다 큽니다. 점검 결과 보존 14일의 정상 상태는 약 3.3GB(추정), 최소 보존 8일이면 약 1.9GB이고 `market` 스냅샷의 93%는 정리 대상입니다(숫자와 권고는 검증 보고서). 학습 제안은 `DATA_COVERAGE` 1건뿐입니다. 숫자는 [검증 보고서](validation-report.md).
 3. **학습 루프의 제안을 실제 데이터로 읽습니다.** 표본(24h 가격 30건·자산 5개, 확정 20건)이 쌓이기 전에는 결론을 내지 마세요. 임계값을 바꾸려면 반드시 재생으로 먼저 시험하고 정책 버전을 올립니다.
 4. **BOOK을 살립니다.** 원인 사슬은 upstream 코드 읽기로 정리했습니다([World Monitor](world-monitor-integration.md)): 집계기 입력 23개 중 2개만 채움 → 신호는 드문 사건에 의존 → 0건이면 발행하지 않음 → 503 → BOOK 대기.
    남은 일은 실행 확인입니다. 승인된 환경에서 `node scripts/seed-cross-source-signals.mjs` 로그의 `Found N/23`·`Extracted K`를 보고, 규제 `high` 항목이 있는데 0건인 이유를 가리세요. 이 컨테이너는 Node 22·Docker 없음이고 제3자 코드 실행은 권한이 막았습니다.
@@ -138,6 +138,7 @@ PostgreSQL로 테스트하려면 임시 클러스터를 띄워 `UAT_TEST_DATABAS
 | `llm.py`, `llm_types.py`, `cli_providers.py` | Provider, 재시도·교정, `LLMError.detail` |
 | `learning.py` | 측정과 제안(매시간, 읽기 전용) |
 | `equity_backtest.py`, `equity_markets.py`, `scripts/backtest_equities.py`, `scripts/equity_candidates.py` | 주식·ETF 일봉 백테스트와 사전 등록 기준으로 후보 고르기. `equity_markets.py`가 미국·국내 시장별 고정 설정(`--market us|kr`)(주문·장부 없음, 연구 전용) |
+| `docs/improvement-verification.md` | 반자동 개선(제안 → 재생 검증 → 사용자 승인)의 설계. 미구현이며 지금 데이터로는 구현을 권하지 않음 |
 | `equity_paper.py` | 미국 ETF 실시간 모의 운용: 결정 기록·모의 자산 재생(`trading-team equity-paper`, 새 테이블 3개) |
 | `worker.py`, `autonomy.py`, `operations.py` | 스케줄, 자동 운영 상태, lease·감독 |
 | `api.py`, `dashboard.py`, `cli.py` | FastAPI, Streamlit 13개 화면, `trading-team` |
