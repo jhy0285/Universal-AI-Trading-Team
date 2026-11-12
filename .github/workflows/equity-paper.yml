@@ -5,7 +5,13 @@ name: equity-paper-daily
 # Claude cloud container does not. See docs/equity-paper.md.
 on:
   schedule:
-    - cron: "41 22 * * *" # 07:41 KST: after the US close in summer and winter, before the next open
+    # GitHub may delay or drop a scheduled event; the first one (2026-11-11 22:41 UTC) never fired.
+    # So three start times, all after the US close and before the next open (13:30 UTC at the
+    # earliest). A run for a day that is already recorded adds nothing (decisions and NAV rows are
+    # written once), and the concurrency group below keeps two runs from overlapping.
+    - cron: "41 22 * * *" # 07:41 KST, the main run
+    - cron: "17 1 * * *" # 10:17 KST, backup
+    - cron: "53 4 * * *" # 13:53 KST, backup
   workflow_dispatch:
     inputs:
       seed_file:
