@@ -56,7 +56,7 @@
 0. 미국 주식·ETF(2026-11-10 사용자 결정: 밈코인 다음으로 시장을 넓히되 이쪽을 먼저, 개선은 반자동). docs/equity-backtest.md와 handoff의 0번 항목을 먼저 읽는다.
    성공 기준은 "SPY 보유와 비슷한 수익 + 낙폭 40% 이상 축소"로 고정돼 있고, 선택된 mom12_top5_def는 검증 구간(2020~)에서 근소하게 미달했다(검증 구간은 이미 열렸으니 재사용 금지).
    2026-11-10에 일봉 실시간 모의 운용을 연결했다(docs/equity-paper.md, `trading-team equity-paper run|status`, 새 테이블 3개, 결정은 불변·시각·데이터 해시 기록).
-   매일 run을 돌려야 하고, 기록이 컨테이너 디스크에만 있어 회수되면 사라진다 → 장기 운용은 사용자 PC·서버로 옮길 것. 이 컨테이너는 Postgres에 직접 연결할 수 없어(프록시 전용) 매일 실행을 GitHub Actions(.github/workflows/equity-paper.yml)로 옮겼다. 사용자가 저장소 비밀 값 EQUITY_PAPER_DB_URL(Neon 직접 연결 문자열)을 넣었고, 2026-11-11 05:18 UTC에 Actions에서 seed_file=records/equity-paper-seed.json 으로 첫 실행이 성공했다(Neon 연결, Yahoo 조회, 기록 이전 확인. docs/equity-paper.md). 첫 예약 실행(2026-11-11 22:41 UTC)은 GitHub가 만들지 않았다(원인 미확정, 그날은 23:21 UTC 수동 실행으로 기록). cron 줄을 바꿔 다시 등록하고 예비 시각 01:17·04:53 UTC를 더했다. 바뀐 예약이 실제로 도는지(`schedule` 이벤트 실행이 생기는지) 확인해야 한다. 이 컨테이너의 예약 작업(trig_01GSdAc8okfyfuHbiFhMyoDd)은 매일 14:20 KST(05:20 UTC)에 Actions 결과를 확인하고, 예약 실행이 없으면 한 번 수동 실행한다. 값은 출력하지 않는다. 판정은 1년·SPY 낙폭 15% 이상일 때만.
+   매일 run을 돌려야 하고, 기록이 컨테이너 디스크에만 있어 회수되면 사라진다 → 장기 운용은 사용자 PC·서버로 옮길 것. 이 컨테이너는 Postgres에 직접 연결할 수 없어(프록시 전용) 매일 실행을 GitHub Actions(.github/workflows/equity-paper.yml)로 옮겼다. 사용자가 저장소 비밀 값 EQUITY_PAPER_DB_URL(Neon 직접 연결 문자열)을 넣었고, 2026-11-11 05:18 UTC에 Actions에서 seed_file=records/equity-paper-seed.json 으로 첫 실행이 성공했다(Neon 연결, Yahoo 조회, 기록 이전 확인. docs/equity-paper.md). 첫 예약 실행(2026-11-11 22:41 UTC)은 GitHub가 만들지 않았다(원인 미확정, 그날은 23:21 UTC 수동 실행으로 기록). cron 줄을 바꿔 다시 등록하고 예비 시각 01:17·04:53 UTC를 더했다. 바뀐 예약은 돈다(2026-11-14 확인: `schedule` 실행 8건 모두 성공, 정해진 시각보다 약 2~8시간 늦지만 모두 개장 전이라 늦은 결정 0). 이 컨테이너의 예약 작업(trig_01GSdAc8okfyfuHbiFhMyoDd)은 매일 14:20 KST(05:20 UTC)에 Actions 결과를 확인하고, 예약 실행이 없으면 한 번 수동 실행한다. 값은 출력하지 않는다. 판정은 1년·SPY 낙폭 15% 이상일 때만.
    LLM 판단은 과거 백테스트로 평가하지 않는다(미래 정보 누수). 실시간 기록이 쌓인 뒤 앞으로의 데이터로만 시험한다.
    국내 ETF 백테스트(docs/equity-backtest-kr.md): 사전 등록 → 1회 실행, 통과 후보 0개, 검증 구간은 열지 않았다(깨끗함). 후보 추가·매개변수 변경은 시험 횟수 증가이므로 사용자 승인과 기록이 필요하다. 다음 시장은 BTC·ETH·SOL(24시간 거래라 엔진의 달력 규칙을 먼저 손봐야 함).
    코인 백테스트(docs/equity-backtest-crypto.md): BTC·ETH·SOL, 후보 8개를 사전 등록(2026-11-11)한 뒤 1회 실행했다. 통과 후보 0개, 검증 구간(2022~)은 열지 않았다(깨끗함). 누적 후보가 30개(미국 11, 국내 11, 코인 8)라 시험 횟수에 주의.
@@ -68,6 +68,7 @@
    - 결정 사유 분포(GET /decisions, 대시보드 Meme Coin Scanner), 모델 호출 수, 체결·RISK 청산·장부 무결성을 기록한다.
    - 체결이 없으면 어느 게이트가 막았는지 숫자로 보고한다. 게이트를 바꾸고 싶다면 재생으로 먼저 시험하고 정책 버전을 올리며,
      반드시 사용자 승인을 받는다.
+   - 3일 실행(2026-11-11~14, 15풀·90초)은 31분 만에 모델 한도(CLI_RATE_LIMITED)로 감독자가 kill switch를 켰고, 세션 무응답 공백(4.6시간·48시간)까지 겹쳐 판단 89건·수집 19.3시간만 남았다(docs/validation-report.md). 장시간 실행은 사용자 PC·서버에서 하고, 점검 때 accounts.killed를 본다.
 3. (완료 2026-11-11) 24시간 연속 운영 점검. 정상. 저장량은 수집당 약 163KB(하루 226MB)로 앞선 59KB 추정보다 크다. 점검함: 보존 14일 정상 상태 약 3.3GB(추정), 최소 8일이면 약 1.9GB, 정리는 `market`의 약 93%에 적용된다(docs/validation-report.md).
 4. 학습 루프 제안을 실제 데이터로 읽는다. 표본(24h 가격 30건·자산 5개, 확정 20건)이 쌓이기 전에는 결론 금지.
 5. BOOK(예측시장): World Monitor 교차 신호가 0개인 원인(upstream seed)을 조사한다.

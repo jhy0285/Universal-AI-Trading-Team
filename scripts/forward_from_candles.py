@@ -9,6 +9,10 @@ the API again (free public API, about 30 calls a minute, so a pool costs 2.3 s).
 
     .venv/bin/python scripts/forward_from_candles.py --db path/to/worker.sqlite3 --work-dir path/to/dir
 
+With --first-seen it measures every asset the observer saw, from its first market snapshot, instead of the
+gate decisions: "if one had bought each candidate the launch feed brought in, at first sight". It writes
+first_seen.json instead of result.json.
+
 Prints a table and writes result.json in the work directory. Means are dominated by a few extreme values
 (one pool showed +5,000,000%), so read the median and the trimmed mean.
 """
@@ -64,6 +68,32 @@ def load():
             }
         )
     return out
+
+
+def load_first_seen():
+    """One sample per asset: its first market snapshot that has a pool and a price."""
+    c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+    rows = c.execute(
+        "select asset_id, fetched_at, payload from data_snapshots where kind = 'market' "
+        "order by fetched_at"
+    ).fetchall()
+    first = {}
+    for asset, fetched, payload in rows:
+        if asset in first:
+            continue
+        p = json.loads(payload)
+        if not p.get("pair_id") or not p.get("price"):
+            continue
+        t = dt.datetime.fromisoformat(fetched).replace(tzinfo=dt.UTC).timestamp()
+        first[asset] = {
+            "asset": asset,
+            "allowed": False,
+            "reason": "FIRST_SIGHTING",
+            "t": t,
+            "pool": p["pair_id"],
+            "snap_price": float(p["price"]),
+        }
+    return list(first.values())
 
 
 def fetch(pool: str):
@@ -144,11 +174,16 @@ def main():
     parser.add_argument(
         "--work-dir", type=Path, required=True, help="where candles are cached and result.json goes"
     )
+    parser.add_argument(
+        "--first-seen",
+        action="store_true",
+        help="measure every observed asset from its first market snapshot, not the decisions",
+    )
     args = parser.parse_args()
     DB, OUT = args.db, args.work_dir
     CACHE = OUT / "candles"
     CACHE.mkdir(parents=True, exist_ok=True)
-    decisions = load()
+    decisions = load_first_seen() if args.first_seen else load()
     pools = sorted({d["pool"] for d in decisions})
     print(f"{len(decisions)} decisions, {len(pools)} pools", flush=True)
     candles = {}
@@ -190,7 +225,7 @@ def main():
     }
     everything = defaultdict(lambda: {"strict": [], "carry": [], "missing": 0})
     for key, hs in samples.items():
-        label = ("ALLOWED " if key[0] else "blocked ") + key[1]
+        label = key[1] if args.first_seen else ("ALLOWED " if key[0] else "blocked ") + key[1]
         result["groups"][label] = {}
         for name, b in hs.items():
             result["groups"][label][name] = {
@@ -210,7 +245,9 @@ def main():
         }
         for name, e in everything.items()
     }
-    (OUT / "result.json").write_text(json.dumps(result, indent=1))
+    (OUT / ("first_seen.json" if args.first_seen else "result.json")).write_text(
+        json.dumps(result, indent=1)
+    )
     report(result)
 
 
