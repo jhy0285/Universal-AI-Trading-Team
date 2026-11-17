@@ -63,6 +63,11 @@ class Market:
                 return httpx.Response(200, json=[dex_pair() | self.pair])
             return httpx.Response(200, json={"pairs": [dex_pair() | self.pair]})
         if host == "api.geckoterminal.com":
+            if path.endswith("/trending_pools"):
+                token = {"data": {"id": f"solana_{MINT}"}}
+                return httpx.Response(
+                    200, json={"data": [{"relationships": {"base_token": token}}]}
+                )
             assert path.endswith(f"/pools/{POOL}/trades")
             return httpx.Response(200, json={"data": self.trades})
         body = json.loads(request.content)
@@ -497,6 +502,101 @@ async def test_cycle_records_the_screen_reason_not_a_stale_price(db, settings, m
         result = await desk.run_cycle("main", "screened")
         await desk.close()
     assert [x["reason"] for x in result["decisions"]] == ["CONCENTRATION_OVER_5_PERCENT"]
+    assert model.schemas.count("ScanOutput") == 1  # The probe only; no SCAN or VET call.
+
+
+async def test_trending_discovery_feeds_the_same_observer(db, settings, market):
+    from trading_team.domain import utcnow
+    from trading_team.engine import Desk
+    from trading_team.llm import LLMRuntime
+
+    market.now = utcnow().replace(microsecond=0)
+    cfg = settings.model_copy(update={"dex_discovery": "trending", "dex_trending_duration": "6h"})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(market.handle)) as client:
+        desk = Desk(cfg, db, LLMRuntime(cfg, None), PublicDataClient(db, client))
+        collected = await desk.collect()
+        stored = desk.latest_snapshots()[0]
+    assert collected["errors"] == [] and collected["count"] == 1 and collected["screened"] == []
+    assert stored.observed_at == market.now and stored.buy_quote is not None
+    paths = [r.url.path for r in market.requests]
+    assert not [x for x in paths if x.startswith(("/token-profiles/", "/token-boosts/"))]
+    trending = [r for r in market.requests if r.url.path.endswith("/trending_pools")]
+    assert [dict(r.url.params) for r in trending] == [{"duration": "6h"}]
+    # The combined mode reads the launch feeds as well; the shared pool is stored once.
+    market.requests.clear()
+    cfg = settings.model_copy(update={"dex_discovery": "launches_trending"})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(market.handle)) as client:
+        desk = Desk(cfg, db, LLMRuntime(cfg, None), PublicDataClient(db, client))
+        both = await desk.collect()
+    paths = [r.url.path for r in market.requests]
+    assert both["count"] == 1 and both["errors"] == []
+    assert "/token-profiles/latest/v1" in paths and paths.count(trending[0].url.path) == 1
+
+
+async def test_minimum_pool_age_records_young_pools_without_observing_them(db, settings, market):
+    from trading_team.domain import utcnow
+    from trading_team.engine import Desk
+    from trading_team.llm import LLMRuntime
+
+    def millis(age: timedelta) -> int:
+        return int((utcnow() - age).timestamp() * 1000)
+
+    market.now = utcnow().replace(microsecond=0)
+    cfg = settings.model_copy(update={"dex_min_pool_age_minutes": 60})
+
+    def excluded(reason: str) -> list[dict]:
+        return [{"asset_id": f"solana:{MINT}", "pair_id": POOL, "reason": reason}]
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(market.handle)) as client:
+        desk = Desk(cfg, db, LLMRuntime(cfg, None), PublicDataClient(db, client))
+        market.pair = {"pairCreatedAt": millis(timedelta(minutes=10))}
+        young = await desk.collect()
+        stored = desk.latest_snapshots()[0]
+        # Nothing was spent on the excluded pool: no holder scan and no quote.
+        hosts = {r.url.host for r in market.requests}
+        market.pair = {"pairCreatedAt": None}
+        unknown = await desk.collect()
+        market.pair = {"pairCreatedAt": millis(timedelta(minutes=61))}
+        old = await desk.collect()
+    assert young["screened"] == excluded("POOL_YOUNGER_THAN_MINIMUM_AGE") and young["count"] == 1
+    assert stored.observed_at is None and stored.buy_quote is None
+    assert hosts == {"api.dexscreener.com"}
+    # An unknown creation time is not treated as old.
+    assert unknown["screened"] == excluded("POOL_AGE_UNKNOWN")
+    assert old["screened"] == [] and old["errors"] == []
+    assert desk.latest_snapshots()[0].buy_quote is not None
+
+
+def test_an_asset_is_as_old_as_its_oldest_discovered_pool(db, settings):
+    from trading_team.engine import Desk
+    from trading_team.llm import LLMRuntime
+
+    def pool(name: str, minutes: int | None, mint: str = MINT):
+        created = None if minutes is None else T0 - timedelta(minutes=minutes)
+        base = DexScreener.normalize(dex_pair() | {"baseToken": {"address": mint}}, T0)
+        return base.model_copy(update={"pair_id": name, "pair_created_at": created})
+
+    other = "Mint" + "2" * 36
+    found = [pool("new", 5), pool("old", 90), pool("blank", None), pool("fresh", 59, other)]
+    off = Desk(settings, db, LLMRuntime(settings, None))
+    assert off.too_young(found, T0) == {}  # The default keeps the original rule.
+    cfg = settings.model_copy(update={"dex_min_pool_age_minutes": 60})
+    desk = Desk(cfg, db, LLMRuntime(cfg, None))
+    assert desk.too_young(found, T0) == {f"solana:{other}": "POOL_YOUNGER_THAN_MINIMUM_AGE"}
+    assert desk.too_young([pool("blank", None)], T0) == {f"solana:{MINT}": "POOL_AGE_UNKNOWN"}
+
+
+async def test_cycle_records_the_minimum_age_reason(db, settings, market):
+    from trading_team.domain import utcnow
+
+    market.pair = {"pairCreatedAt": int((utcnow() - timedelta(minutes=10)).timestamp() * 1000)}
+    cfg = settings.model_copy(update={"dex_min_pool_age_minutes": 60})
+    model = DeskModel()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(market.handle)) as client:
+        desk = await live_desk(db, cfg, market, client, model, history=True)
+        result = await desk.run_cycle("main", "too-young")
+        await desk.close()
+    assert [x["reason"] for x in result["decisions"]] == ["POOL_YOUNGER_THAN_MINIMUM_AGE"]
     assert model.schemas.count("ScanOutput") == 1  # The probe only; no SCAN or VET call.
 
 

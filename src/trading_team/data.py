@@ -227,7 +227,12 @@ class DexScreener:
             if failures:
                 raise DataError(failures[0])
             return []
-        # The token endpoint accepts at most 30 addresses per request.
+        return await self.tokens(mints)
+
+    async def tokens(self, mints: list[str]) -> list[MarketSnapshot]:
+        """Every pool of the given Solana mints; the endpoint takes at most 30 per request."""
+        if not mints:
+            return []
         body = await self.data.request(
             "GET",
             f"{self.BASE}/tokens/v1/solana/{','.join(mints[:30])}",
@@ -264,6 +269,62 @@ class DexScreener:
             for p in body["pairs"]
             if p.get("chainId") == chain and p.get("baseToken", {}).get("address") == mint
         ]
+
+
+class GeckoTerminalTrending:
+    """Base-token mints of GeckoTerminal's trending Solana pools: one keyless call.
+
+    Only the list of mints comes from here. Their pools, prices and liquidity are read from
+    DexScreener like every other candidate, so the observer and the gates see the same fields.
+    """
+
+    URL = "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools"
+
+    def __init__(self, data: PublicDataClient):
+        self.data = data
+
+    @staticmethod
+    def _base_token(row) -> str | None:
+        try:
+            token = row["relationships"]["base_token"]["data"]["id"]
+        except (KeyError, TypeError):
+            return None
+        return token if isinstance(token, str) else None
+
+    @classmethod
+    def _summary(cls, body):
+        rows = body.get("data") if isinstance(body, dict) else None
+        return {
+            "pools": [
+                [x.get("id") if isinstance(x, dict) else None, cls._base_token(x)]
+                for x in (rows if isinstance(rows, list) else [])
+            ]
+        }
+
+    async def mints(self, duration: str) -> list[str]:
+        body = await self.data.request(
+            "GET",
+            self.URL,
+            kind="geckoterminal_trending",
+            params={"duration": duration},
+            headers={"Accept": "application/json"},
+            summarize=self._summary,
+        )
+        rows = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            raise DataError("TRENDING_POOLS_UNAVAILABLE")
+        mints = []
+        for row in rows:
+            token = self._base_token(row) or ""
+            mint = token.removeprefix("solana_")
+            if (
+                token.startswith("solana_")
+                and mint.isalnum()
+                and 32 <= len(mint) <= 44
+                and mint not in mints
+            ):
+                mints.append(mint)
+        return mints
 
 
 class MarketDataFeed:

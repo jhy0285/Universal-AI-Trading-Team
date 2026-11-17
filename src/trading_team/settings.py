@@ -107,9 +107,17 @@ class Settings(BaseSettings):
     worldmonitor_redis_token: SecretStr = SecretStr("")
     worldmonitor_seed_enabled: bool = False
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
-    # Original strategy: candidates come from DexScreener launch data only.
-    dex_discovery: Literal["launches", "search", "both"] = "launches"
+    # Original strategy: candidates come from DexScreener launch data only. `trending` reads
+    # GeckoTerminal's trending Solana pools instead, `launches_trending` reads both.
+    dex_discovery: Literal["launches", "search", "both", "trending", "launches_trending"] = (
+        "launches"
+    )
     dex_queries: str = "BONK"
+    dex_trending_duration: Literal["5m", "1h", "6h", "24h"] = "1h"
+    # A candidate whose oldest known pool is younger than this is recorded but not observed.
+    # 0 keeps the original rule (no minimum). Measured 2026-11-17 on the 3-day run: pools first
+    # seen under an hour old lost about half within six hours (docs/validation-report.md).
+    dex_min_pool_age_minutes: int = Field(default=0, ge=0, le=10080)
     market_data_feed_url: str = ""
     market_data_feed_api_key: SecretStr = SecretStr("")
     # Free Jupiter/Solana RPC/GeckoTerminal observations for the most liquid Dex pools.
