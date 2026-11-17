@@ -11,6 +11,7 @@ from trading_team.broker import PaperBroker
 from trading_team.data import (
     DataError,
     DexScreener,
+    GeckoTerminalTrending,
     MarketDataFeed,
     PredictionMarkets,
     PublicDataClient,
@@ -155,6 +156,7 @@ class Desk:
         self.runtime.configuration_guard = self.assert_config
         self.data = data or PublicDataClient(db)
         self.dex = DexScreener(self.data)
+        self.trending = GeckoTerminalTrending(self.data)
         self.market_feed = MarketDataFeed(settings, self.data)
         self.wm = WorldMonitor(settings, self.data)
         self.prediction = PredictionMarkets(self.data)
@@ -292,7 +294,7 @@ class Desk:
         results = []
         errors = []
         discovered = {}
-        if self.settings.dex_discovery in {"launches", "both"}:
+        if self.settings.dex_discovery in {"launches", "both", "launches_trending"}:
             try:
                 for snapshot in await self.dex.launches():
                     discovered.setdefault((snapshot.asset_id, snapshot.pair_id), snapshot)
@@ -306,14 +308,30 @@ class Desk:
                         discovered.setdefault((snapshot.asset_id, snapshot.pair_id), snapshot)
                 except DataError as exc:
                     errors.append({"query": query, "reason": exc.code})
+        if self.settings.dex_discovery in {"trending", "launches_trending"}:
+            try:
+                mints = await self.trending.mints(self.settings.dex_trending_duration)
+                for snapshot in await self.dex.tokens(mints):
+                    discovered.setdefault((snapshot.asset_id, snapshot.pair_id), snapshot)
+            except DataError as exc:
+                errors.append({"source": "geckoterminal_trending", "reason": exc.code})
+        too_young = self.too_young(list(discovered.values()), utcnow())
         observed, notes, screened = await self.observer.observe(
-            list(discovered.values()), trades=trades
+            [x for x in discovered.values() if x.asset_id not in too_young], trades=trades
         )
         errors.extend(notes)
         try:
             observed = await self.market_feed.enrich(observed)
         except DataError as exc:
             errors.append({"source": "market_data_feed", "reason": exc.code})
+        # Excluded candidates stay on record, unobserved, with the reason SCAN will report.
+        for snapshot in discovered.values():
+            if snapshot.asset_id in too_young:
+                observed.append(snapshot)
+                reason = too_young[snapshot.asset_id]
+                screened.append(
+                    {"asset_id": snapshot.asset_id, "pair_id": snapshot.pair_id, "reason": reason}
+                )
         for snapshot in observed:
             self.broker.save_snapshot(snapshot)
             results.append(snapshot)
@@ -322,6 +340,26 @@ class Desk:
             "errors": errors,
             "screened": screened,
             "count": len(results),
+        }
+
+    def too_young(self, discovered: list[MarketSnapshot], now: datetime) -> dict[str, str]:
+        """Assets that DEX_MIN_POOL_AGE_MINUTES leaves unobserved, with the reason.
+
+        An asset is as old as its oldest discovered pool. A pool without a creation time proves
+        nothing, so an asset with no known creation time is excluded rather than assumed old.
+        """
+        minimum = self.settings.dex_min_pool_age_minutes * 60
+        if not minimum:
+            return {}
+        oldest: dict[str, datetime | None] = {}
+        for item in discovered:
+            known = oldest.setdefault(item.asset_id, None)
+            if item.pair_created_at is not None and (known is None or item.pair_created_at < known):
+                oldest[item.asset_id] = item.pair_created_at
+        return {
+            asset: "POOL_AGE_UNKNOWN" if born is None else "POOL_YOUNGER_THAN_MINIMUM_AGE"
+            for asset, born in oldest.items()
+            if born is None or (now - born).total_seconds() < minimum
         }
 
     def latest_snapshots(self, provenance: str = "live", limit: int = 100) -> list[MarketSnapshot]:

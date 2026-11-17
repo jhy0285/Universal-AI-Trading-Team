@@ -237,3 +237,58 @@ async def test_launch_discovery_reads_solana_launch_feeds():
     # One feed failing does not hide the other; only the requested Solana launch is kept.
     assert [(x.asset_id, x.pair_id) for x in found] == [(f"solana:{mint}", "pool1")]
     assert seen[-1] == f"/tokens/v1/solana/{mint}"
+
+
+async def test_trending_discovery_reads_mints_from_geckoterminal_and_pools_from_dex():
+    from trading_team.data import GeckoTerminalTrending
+
+    mint, other = "T" * 40, "U" * 43
+    seen = []
+
+    def token(value):
+        return {"relationships": {"base_token": {"data": {"id": value}}}}
+
+    def handler(request):
+        seen.append((request.url.host, request.url.path, dict(request.url.params)))
+        if request.url.host == "api.geckoterminal.com":
+            rows = [
+                token(f"solana_{mint}"),
+                token(f"solana_{mint}"),
+                token("eth_0x" + "a" * 40),
+                token("solana_bad/address"),
+                {"relationships": {}},
+                token(f"solana_{other}"),
+            ]
+            return httpx.Response(200, json={"data": rows})
+        pairs = [
+            {"chainId": "solana", "pairAddress": "pool1", "baseToken": {"address": mint}},
+            {"chainId": "solana", "pairAddress": "pool2", "baseToken": {"address": "X" * 40}},
+        ]
+        return httpx.Response(200, json=pairs)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        data = PublicDataClient(client=client)
+        mints = await GeckoTerminalTrending(data).mints("6h")
+        found = await DexScreener(data).tokens(mints)
+        assert await DexScreener(data).tokens([]) == []
+    # Duplicates, other chains and malformed rows are dropped; the order of the feed is kept.
+    assert mints == [mint, other]
+    assert seen[0] == (
+        "api.geckoterminal.com",
+        "/api/v2/networks/solana/trending_pools",
+        {"duration": "6h"},
+    )
+    assert seen[1][:2] == ("api.dexscreener.com", f"/tokens/v1/solana/{mint},{other}")
+    # Only pools of the requested mints are kept; nothing is asked for an empty list.
+    assert [(x.asset_id, x.pair_id) for x in found] == [(f"solana:{mint}", "pool1")]
+    assert len(seen) == 2
+
+
+async def test_trending_discovery_refuses_an_unexpected_shape():
+    from trading_team.data import GeckoTerminalTrending
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"data": None}))
+    ) as client:
+        with pytest.raises(DataError, match="TRENDING_POOLS_UNAVAILABLE"):
+            await GeckoTerminalTrending(PublicDataClient(client=client)).mints("1h")

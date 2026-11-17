@@ -11,7 +11,8 @@ the API again (free public API, about 30 calls a minute, so a pool costs 2.3 s).
 
 With --first-seen it measures every asset the observer saw, from its first market snapshot, instead of the
 gate decisions: "if one had bought each candidate the launch feed brought in, at first sight". It writes
-first_seen.json instead of result.json.
+first_seen.json instead of result.json. Adding --by-age splits those first sightings by how old the pool
+was at that moment (first_seen_by_age.json): the basis of `DEX_MIN_POOL_AGE_MINUTES`.
 
 Prints a table and writes result.json in the work directory. Means are dominated by a few extreme values
 (one pool showed +5,000,000%), so read the median and the trimmed mean.
@@ -70,7 +71,22 @@ def load():
     return out
 
 
-def load_first_seen():
+AGE_BUCKETS = [
+    (600, "pool under 10 min old"),
+    (3600, "pool 10-60 min old"),
+    (21600, "pool 1-6 h old"),
+]
+
+
+def age_label(payload: dict, seen: float) -> str:
+    born = payload.get("pair_created_at")
+    if not born:
+        return "pool age unknown"
+    age = seen - dt.datetime.fromisoformat(born.replace("Z", "+00:00")).timestamp()
+    return next((label for limit, label in AGE_BUCKETS if age < limit), "pool over 6 h old")
+
+
+def load_first_seen(by_age: bool = False):
     """One sample per asset: its first market snapshot that has a pool and a price."""
     c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     rows = c.execute(
@@ -88,7 +104,7 @@ def load_first_seen():
         first[asset] = {
             "asset": asset,
             "allowed": False,
-            "reason": "FIRST_SIGHTING",
+            "reason": age_label(p, t) if by_age else "FIRST_SIGHTING",
             "t": t,
             "pool": p["pair_id"],
             "snap_price": float(p["price"]),
@@ -179,11 +195,18 @@ def main():
         action="store_true",
         help="measure every observed asset from its first market snapshot, not the decisions",
     )
+    parser.add_argument(
+        "--by-age",
+        action="store_true",
+        help="with --first-seen: group the first sightings by the pool's age at that moment",
+    )
     args = parser.parse_args()
+    if args.by_age and not args.first_seen:
+        parser.error("--by-age needs --first-seen")
     DB, OUT = args.db, args.work_dir
     CACHE = OUT / "candles"
     CACHE.mkdir(parents=True, exist_ok=True)
-    decisions = load_first_seen() if args.first_seen else load()
+    decisions = load_first_seen(args.by_age) if args.first_seen else load()
     pools = sorted({d["pool"] for d in decisions})
     print(f"{len(decisions)} decisions, {len(pools)} pools", flush=True)
     candles = {}
@@ -191,7 +214,9 @@ def main():
         candles[pool] = fetch(pool)
         if i % 20 == 0:
             print(f"fetched {i}/{len(pools)}", flush=True)
-    now = dt.datetime.now(dt.UTC).timestamp()
+    # A cached pool knows nothing after the moment it was fetched: a later re-run must not carry
+    # its last candle forward to targets the cache never covered.
+    known_until = {pool: (CACHE / f"{pool}.json").stat().st_mtime for pool in pools}
     ratios, no_base = [], 0
     samples = defaultdict(lambda: defaultdict(lambda: {"strict": [], "carry": [], "missing": 0}))
     for d in decisions:
@@ -203,7 +228,7 @@ def main():
         ratios.append(d["snap_price"] / base[0])
         for name, h in HORIZONS.items():
             target = d["t"] + h
-            if target > now - BUCKET:
+            if target > known_until[d["pool"]] - BUCKET:
                 continue
             got = price_at(cs, target)
             bucket = samples[(d["allowed"], d["reason"])][name]
@@ -245,13 +270,14 @@ def main():
         }
         for name, e in everything.items()
     }
-    (OUT / ("first_seen.json" if args.first_seen else "result.json")).write_text(
-        json.dumps(result, indent=1)
-    )
-    report(result)
+    name = "result.json"
+    if args.first_seen:
+        name = "first_seen_by_age.json" if args.by_age else "first_seen.json"
+    (OUT / name).write_text(json.dumps(result, indent=1))
+    report(result, minimum=1 if args.by_age else 60)
 
 
-def report(result: dict) -> None:
+def report(result: dict, minimum: int = 60) -> None:
     def line(x):
         if not x.get("n"):
             return "n=0"
@@ -269,7 +295,7 @@ def report(result: dict) -> None:
         "strict = a trade within 1 h before the target time; carry = the last known price carried forward"
     )
     for label, groups in [("ALL", result["all_decisions"]), *result["groups"].items()]:
-        if label != "ALL" and groups.get("1h", {}).get("carry", {}).get("n", 0) < 60:
+        if label != "ALL" and groups.get("1h", {}).get("carry", {}).get("n", 0) < minimum:
             continue
         print(label)
         for horizon in ("1h", "6h", "24h"):
