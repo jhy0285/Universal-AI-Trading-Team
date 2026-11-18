@@ -279,6 +279,11 @@ class GeckoTerminalTrending:
     """
 
     URL = "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools"
+    # The keyless limit (30 calls a minute) is shared by everyone behind the same IP: 8 of the
+    # first 45 collections on 2026-11-17/18 got a 429. Waits of 15 s and 30 s fit in the
+    # collection interval; a third 429 leaves this collection with the other sources only.
+    ATTEMPTS = 3
+    RETRY_AFTER = 15.0
 
     def __init__(self, data: PublicDataClient):
         self.data = data
@@ -302,14 +307,21 @@ class GeckoTerminalTrending:
         }
 
     async def mints(self, duration: str) -> list[str]:
-        body = await self.data.request(
-            "GET",
-            self.URL,
-            kind="geckoterminal_trending",
-            params={"duration": duration},
-            headers={"Accept": "application/json"},
-            summarize=self._summary,
-        )
+        for attempt in range(self.ATTEMPTS):
+            try:
+                body = await self.data.request(
+                    "GET",
+                    self.URL,
+                    kind="geckoterminal_trending",
+                    params={"duration": duration},
+                    headers={"Accept": "application/json"},
+                    summarize=self._summary,
+                )
+                break
+            except DataError as exc:
+                if exc.code != "DATA_HTTP_429" or attempt == self.ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(self.RETRY_AFTER * (attempt + 1))
         rows = body.get("data") if isinstance(body, dict) else None
         if not isinstance(rows, list):
             raise DataError("TRENDING_POOLS_UNAVAILABLE")

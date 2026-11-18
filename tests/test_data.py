@@ -292,3 +292,36 @@ async def test_trending_discovery_refuses_an_unexpected_shape():
     ) as client:
         with pytest.raises(DataError, match="TRENDING_POOLS_UNAVAILABLE"):
             await GeckoTerminalTrending(PublicDataClient(client=client)).mints("1h")
+
+
+async def test_trending_discovery_waits_out_a_shared_rate_limit(monkeypatch):
+    from trading_team.data import GeckoTerminalTrending
+
+    mint = "T" * 40
+    waits, statuses = [], []
+    body = {"data": [{"relationships": {"base_token": {"data": {"id": f"solana_{mint}"}}}}]}
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+
+    def handler(_request):
+        status = statuses.pop(0)
+        return httpx.Response(status, json=body if status == 200 else {})
+
+    monkeypatch.setattr("trading_team.data.asyncio.sleep", fake_sleep)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        trending = GeckoTerminalTrending(PublicDataClient(client=client))
+        statuses[:] = [429, 429, 200]
+        assert await trending.mints("1h") == [mint]
+        assert waits == [15.0, 30.0]
+        # A third 429 gives up with the rate-limit code, so the collection notes it.
+        waits.clear()
+        statuses[:] = [429, 429, 429]
+        with pytest.raises(DataError, match="DATA_HTTP_429"):
+            await trending.mints("1h")
+        assert waits == [15.0, 30.0]
+        # Other failures are not retried.
+        statuses[:] = [500]
+        with pytest.raises(DataError, match="DATA_HTTP_500"):
+            await trending.mints("1h")
+        assert waits == [15.0, 30.0] and statuses == []
